@@ -1,0 +1,16 @@
+# Sample csv file
+key,type,encoding,value
+keyconfig,namespace
+devEui,data,string,07F0430D30DD0605
+appEui,data,string,0940AF0550C80605
+appKey,data,string,07F0430D30DD06053306D0CA0070230F
+devconfig,namespace
+RM1_O3,data,u8,1
+RM2_O3,data,u8,0
+RM3_O3,data,u8,0
+nodeconfig,namespace
+FW,data,string,V10.0.0_20210915
+TimingSS,data,u8,15
+TimingCFG,data,u8,1
+OperationMode,data,u8,1
+price,data,u16,10000
