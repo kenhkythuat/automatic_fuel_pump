@@ -25,20 +25,9 @@ struct fuel_para {
 };
 QueueHandle_t uplink_queue;
 TaskHandle_t my_task_handler;
-cJSON *json_obj;
 
-struct mb_data
-{
-    uint16_t addr;
-    uint16_t value;
-    bool isChanged;
-};
-enum msg_type {
-    INIT_MSG = 0,
-    NODE_CFG_MSG,
-    REQUEST_NODE_CFG_MSG,
-    MK_CFG_MSG,
-};
+
+uint8_t u8FwVerion;
 
 // Wifi variables and function
 esp_mqtt_client_handle_t mqtt_client;

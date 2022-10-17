@@ -52,6 +52,18 @@ static void setOperationMode_version(uint8_t OperationMode)
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
+
+static void setFW_version(uint8_t u8FwVerion)
+{
+    esp_err_t err;
+    nvs_handle nodeconfig_hdl = 0;
+    err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
+    err=nvs_set_u8(nodeconfig_hdl,"fwVerion",u8FwVerion);
+    ESP_ERROR_CHECK(err);
+    nvs_close(nodeconfig_hdl);
+}
+
 static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
@@ -106,9 +118,16 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                 }
             if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
             {
-                // update Operation Mode in NVS
-                  setOperationMode_version(FW_OTA_MODE);
-                  esp_restart();  
+                int getFwVer=atoi(cJSON_GetObjectItem(json_obj, "fw_version")->valuestring);
+                printf("FW version : %d\n",getFwVer);
+                if(getFwVer>u8FwVerion)
+                {
+                    u8FwVerion=getFwVer;
+                    setFW_version(u8FwVerion);
+                    // update Operation Mode in NVS
+                    setOperationMode_version(FW_OTA_MODE);
+                    esp_restart();  
+                }
             }  
                
             break;

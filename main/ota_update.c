@@ -8,6 +8,7 @@
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "app_common_interfaces.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -57,6 +58,16 @@ static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
     return ESP_OK;
 }
 
+static void setOperationMode_version(uint8_t OperationMode)
+{
+    esp_err_t err;
+    nvs_handle nodeconfig_hdl = 0;
+    err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
+    err=nvs_set_u8(nodeconfig_hdl,"OperationMode",OperationMode);
+    ESP_ERROR_CHECK(err);
+    nvs_close(nodeconfig_hdl);
+}
 
 static void update_task(void *pvParameter) {
     esp_err_t ota_finish_err = ESP_OK;
@@ -78,6 +89,8 @@ static void update_task(void *pvParameter) {
         ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
         vTaskDelete(NULL);
     }
+    //set Operation mode back to Fuel dispenser
+    setOperationMode_version(FUEL_DISPENSER_MODE);
 
     // check OTA images header
     esp_app_desc_t app_desc;
