@@ -16,7 +16,7 @@
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "app_common_interfaces.h"
-#include "protocol_examples_common.h"
+//#include "protocol_examples_common.h"
 
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
