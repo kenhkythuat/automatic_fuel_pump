@@ -16,7 +16,7 @@
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "app_common_interfaces.h"
-#include "protocol_examples_common.h"
+//#include "protocol_examples_common.h"
 
 #include "lwip/sockets.h"
 #include "lwip/dns.h"
@@ -34,7 +34,7 @@ static SemaphoreHandle_t push_msg_sem;
 esp_mqtt_client_handle_t client;
 cJSON *json_obj;
 char payload[256];
-int currentPrice=0;
+//int currentPrice=0;
 
 static void log_error_if_nonzero(const char * message, int error_code)
 {
@@ -60,6 +60,17 @@ static void setFW_version(uint8_t u8FwVerion)
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
     err=nvs_set_u8(nodeconfig_hdl,"fwVerion",u8FwVerion);
+    ESP_ERROR_CHECK(err);
+    nvs_close(nodeconfig_hdl);
+}
+
+static void setNewPrice(uint16_t u16NewPrice)
+{
+    esp_err_t err;
+    nvs_handle nodeconfig_hdl = 0;
+    err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
+    err=nvs_set_u8(nodeconfig_hdl,"price",u16NewPrice);
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
@@ -105,16 +116,21 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             }
             
             if(cJSON_GetObjectItem(json_obj, "price") != NULL) 
-                if(atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring) !=currentPrice)
-                {
-                xTaskCreate(&change_price_by_vir_keypad, 
-                            "change_price_by_vir_keypad", 
-                            2048, 
-                            cJSON_GetObjectItem(json_obj, "price")->valuestring, 
-                            configMAX_PRIORITIES-1, 
-                            NULL);
-                            // &my_task_handler);
-                // change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                if(atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring) !=u16CurPrice)
+                {                    
+                    //update current price to new price and store in NVS
+                    u16CurPrice=atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                    setNewPrice(u16CurPrice);
+
+                    //Send new price to device via simulated keypad
+                    xTaskCreate(&change_price_by_vir_keypad, 
+                                "change_price_by_vir_keypad", 
+                                2048, 
+                                cJSON_GetObjectItem(json_obj, "price")->valuestring, 
+                                configMAX_PRIORITIES-1, 
+                                NULL);
+                                // &my_task_handler);
+                    // change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
                 }
             if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
             {

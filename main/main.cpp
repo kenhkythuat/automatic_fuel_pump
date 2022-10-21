@@ -32,7 +32,7 @@ extern "C" {
 
 #define FW_URL "http://172.24.1.1:8181/atc_wifi_fw.bin"
 uint8_t operationMode ;
-uint16_t u16Price ;
+//uint16_t u16Price ;
 
 static void getOperationMode_version()
 {
@@ -43,9 +43,9 @@ static void getOperationMode_version()
     err=nvs_get_u8(nodeconfig_hdl,"OperationMode",&operationMode);
     ESP_ERROR_CHECK(err);
     printf("OperationMode %d\n",operationMode);
-    err=nvs_get_u16(nodeconfig_hdl,"price",&u16Price);
+    err=nvs_get_u16(nodeconfig_hdl,"price",&u16CurPrice);
     ESP_ERROR_CHECK(err);
-    printf("Current price %d\n",u16Price);
+    printf("Current price %d\n",u16CurPrice);
     err=nvs_get_u8(nodeconfig_hdl,"fwVerion",&u8FwVerion);
     printf("Fw version %d\n",u8FwVerion);
     ESP_ERROR_CHECK(err);
