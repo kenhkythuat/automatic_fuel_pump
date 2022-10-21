@@ -1,26 +1,8 @@
 {
-  "idf.gitPath": "C:\\Users\\DELL\\.espressif\\tools\\idf-git\\cmd\\git.exe",
-  "idf.espIdfPathWin": "C:\\Users\\DELL\\esp\\esp-idf",
-  "idf.customExtraPaths": "C:\\Users\\DELL\\.espressif\\tools\\xtensa-esp32-elf\\esp-2020r3-8.4.0\\xtensa-esp32-elf\\bin;C:\\Users\\DELL\\.espressif\\tools\\xtensa-esp32s2-elf\\esp-2020r3-8.4.0\\xtensa-esp32s2-elf\\bin;C:\\Users\\DELL\\.espressif\\tools\\xtensa-esp32s3-elf\\esp-2020r3-8.4.0\\xtensa-esp32s3-elf\\bin;C:\\Users\\DELL\\.espressif\\tools\\riscv32-esp-elf\\1.24.0.123_64eb9ff-8.4.0\\riscv32-esp-elf\\bin;C:\\Users\\DELL\\.espressif\\tools\\esp32ulp-elf\\2.28.51-esp-20191205\\esp32ulp-elf-binutils\\bin;C:\\Users\\DELL\\.espressif\\tools\\esp32s2ulp-elf\\2.28.51-esp-20191205\\esp32s2ulp-elf-binutils\\bin;C:\\Users\\DELL\\.espressif\\tools\\cmake\\3.16.4\\bin;C:\\Users\\DELL\\.espressif\\tools\\openocd-esp32\\v0.10.0-esp32-20210401\\openocd-esp32\\bin;C:\\Users\\DELL\\.espressif\\tools\\ninja\\1.10.2;C:\\Users\\DELL\\.espressif\\tools\\idf-exe\\1.0.1;C:\\Users\\DELL\\.espressif\\tools\\ccache\\3.7;C:\\Users\\DELL\\.espressif\\tools\\dfu-util\\0.9\\dfu-util-0.9-win64;C:\\Users\\DELL\\.espressif\\tools\\idf-python-wheels\\idf4.3_py3.9_2021-01-07",
-  "idf.customExtraVars": "{\"OPENOCD_SCRIPTS\":\"C:\\\\Users\\\\DELL\\\\.espressif\\\\tools\\\\openocd-esp32\\\\v0.10.0-esp32-20210401/openocd-esp32/share/openocd/scripts\",\"IDF_CCACHE_ENABLE\":\"1\"}",
-  "idf.pythonBinPathWin": "C:\\Users\\DELL\\.espressif\\python_env\\idf4.3_py3.9_env\\Scripts\\python.exe",
-  "idf.portWin": "COM6",
-  "idf.adapterTargetName": "esp32",
-  "idf.openOcdConfigs": [
-    "interface/ftdi/esp32_devkitj_v1.cfg",
-    "target/esp32.cfg"
-  ],
+  "C_Cpp.intelliSenseEngine": "Tag Parser",
   "idf.flashType": "UART",
+  "idf.portWin": "COM3",
   "files.associations": {
-    "esp_wifi.h": "c",
-    "string_view": "c",
-    "event_groups.h": "c",
-    "manager.h": "c",
-    "mqtt_client.h": "c",
-    "mbcontroller.h": "c",
-    "array": "cpp",
-    "string": "cpp",
-    "gpio.h": "c",
-    "app_common_interfaces.h": "c"
+    "*.inc": "cpp"
   }
 }

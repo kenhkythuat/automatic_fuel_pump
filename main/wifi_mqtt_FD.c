@@ -79,14 +79,18 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id=0;
+    char tb_topic_price[64],tb_topic_fw[64];
     // your_context_t *context = event->context;
+    sprintf(tb_topic_price, "/station/price/diesel_%d",u8DeviceId);
+    sprintf(tb_topic_fw, "/station/fw_version/diesel_%d",u8DeviceId);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // subcribe to data topic QoS0
-            msg_id = esp_mqtt_client_subscribe(client, "/station/price/diesel_4", 0);
+            
+            msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
-            msg_id = esp_mqtt_client_subscribe(client, "/station/fw_version/diesel_4", 0);
+            msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
             break;
@@ -246,12 +250,8 @@ void push_msg_to_broker(void) {
                         atoi(price),  
                         ap.rssi);
 #else
-                //if(currentPrice !=atoi(price))
-                {
-                    currentPrice=atoi(price);
-                }
                 sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
-                        4, 
+                        u8DeviceId, 
                         "gasoline", 
                         atoi(liter), 
                         atoi(money), 
@@ -283,7 +283,7 @@ void ping_tb(void) {
         //printf("Free heap size: %d bytes\n", esp_get_minimum_free_heap_size());
  
         // stat = esp_mqtt_client_publish(client, "/station/data", payload_ping, strlen(payload_ping), 0, false);
-        sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d}",4,"gasoline",1);
+        sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d}",u8DeviceId,"gasoline",1);
         stat = push_heartbeat_msg(payload,strlen(payload));
         printf("Ping MSG successfully\n");
         vTaskDelay(pdMS_TO_TICKS(60000));

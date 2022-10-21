@@ -29,7 +29,7 @@ TaskHandle_t my_task_handler;
 
 uint8_t u8FwVerion;
 uint16_t u16CurPrice;
-
+uint8_t u8DeviceId;
 // Wifi variables and function
 esp_mqtt_client_handle_t mqtt_client;
 

@@ -38,8 +38,12 @@ static void getOperationMode_version()
 {
     esp_err_t err;
     nvs_handle nodeconfig_hdl = 0;
+    u8DeviceId=0;
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
+    err=nvs_get_u8(nodeconfig_hdl,"deviceId",&u8DeviceId);
+    ESP_ERROR_CHECK(err);
+    printf("DeviceId %d\n",u8DeviceId);
     err=nvs_get_u8(nodeconfig_hdl,"OperationMode",&operationMode);
     ESP_ERROR_CHECK(err);
     printf("OperationMode %d\n",operationMode);
