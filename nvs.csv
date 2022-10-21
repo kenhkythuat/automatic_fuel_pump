@@ -1,7 +1,7 @@
 # Sample csv file
 key,type,encoding,value
 nodeconfig,namespace
-deviceId,data,u8,3
+deviceId,data,u8,2
 fwVerion,data,u8,10
 OperationMode,data,u8,1
 price,data,u16,10000
