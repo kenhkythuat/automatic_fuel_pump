@@ -88,7 +88,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // subcribe to data topic QoS0
             
-            msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
+//            msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
@@ -226,6 +226,15 @@ void push_msg_to_broker(void) {
     for(;;) {          
         if (xQueueReceive(uplink_queue, &c_data, portMAX_DELAY) == pdTRUE)
         {
+            if(c_data[0]==0xF0)//process for end session pressed
+            {
+                printf("Sending end session signal to server\n");
+                sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"gasoline",1);
+                stat = push_heartbeat_msg(payload,strlen(payload));
+                ESP_LOGI(TAG, "sent publish, stat=%d", stat);
+            }
+            else
+            {
             printf("\nData: %s\n", c_data);
             strncpy(liter, c_data, 10);
             strncpy(money, c_data+10, 10);
@@ -269,7 +278,7 @@ void push_msg_to_broker(void) {
 /*            } else {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
-*/ 
+*/          }
 
         }
     }

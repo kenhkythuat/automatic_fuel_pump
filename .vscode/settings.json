@@ -3,6 +3,12 @@
   "idf.flashType": "UART",
   "idf.portWin": "COM3",
   "files.associations": {
-    "*.inc": "cpp"
-  }
+    "*.inc": "cpp",
+    "array": "c",
+    "string": "c",
+    "string_view": "c",
+    "complex": "cpp",
+    "ratio": "c"
+  },
+  "idf.adapterTargetName": "esp32"
 }
