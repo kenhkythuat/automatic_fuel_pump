@@ -88,7 +88,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // subcribe to data topic QoS0
             
-//            msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
+         //  msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);

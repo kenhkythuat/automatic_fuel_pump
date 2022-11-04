@@ -26,7 +26,15 @@
 
 #define BUF_SIZE (1024)
 
-#define E_INT_PIN (27)
+#define COL_8_INT_PIN (27) //button col 8
+#define ROW_8_INT_PIN (26) //button row 8
+#define ROW_E_INT_PIN (25) //button row E
+#define COL_E_INT_PIN (33) //button col E
+
+static volatile int disable_intr_times_1 = 0,disable_intr_times_2 = 0;  // use this to calculate how many times it go into interrupt
+static volatile int disable_intr_times_3 = 0,disable_intr_times_4 = 0; 
+static volatile int col_8_detected=0,row_8_detected=0;
+static volatile int col_E_detected=0,row_E_detected=0;
 void DecToHexStr(int dec, char *str) { 
     sprintf(str, "%2x", dec); 
     if(str[0] == ' ') 
@@ -52,7 +60,7 @@ typedef enum {
     FUEL_PUMPING,
     USER_SET_PRICE,
     USER_PRESS_T,
-    USER_PRESS_T8_OR_TS,
+    USER_PRESS_T8,
     USER_RESET_WORKING_SHIFT, // T 8 
     USER_CHECK_WORKING_SHIFT, // T L
     USER_CHECK_ENTIRE_SHIFT, // T $ 123456
@@ -114,17 +122,18 @@ static void read_rs232_task(void *arg)
                      * 0x40 means nozzle is being lifted
                      * 0x45 means device in setprice mode 
                      */
+                    #ifdef RAW_DATA
                     printf("Raw data:   ");
                     for(int j = 0; j < 21; j++) {
                         printf("%x ", fd_op.data[j]);
                     } 
                     printf("\t state: %d , E: %d\n   ", fd_op.state, user_pressed_E);
-
+                    #endif
 
 
                     switch(fd_op.state) {
                         case IDLE:
-                            user_pressed_E = false;
+                            //user_pressed_E = false;
                             copy_21_bytes(fd_op.normal_data, fd_op.data);
                             // lift noozle, start pumping
                             if( (fd_op.data[19] & 0x0F) == 0x00) { // lift noozle, start pumping
@@ -193,46 +202,90 @@ static void read_rs232_task(void *arg)
                             if((fd_op.data[19] & 0x0F) == 0x04) {
                                 ESP_LOGI("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
                                 fd_op.state = IDLE;
+                                break;
                             }
-                            if(compare_5_bytes(fd_op.data, FILLING_PW)) {
-                                ESP_LOGI("STATE_MACHINE", "user press 8 or $  >>>>> switch to USER_PRESS_T8_OR_TS mode");
-                                fd_op.state = USER_PRESS_T8_OR_TS;
+                            gpio_intr_enable(COL_8_INT_PIN);
+                            gpio_intr_enable(ROW_8_INT_PIN);
+                            // gpio_intr_enable(COL_E_INT_PIN);
+                            // gpio_intr_enable(ROW_E_INT_PIN);
+                            //Checking button 8 is press
+                            if(row_8_detected && col_8_detected)
+                            {
+                                if(compare_5_bytes(fd_op.data, FILLING_PW) /*and button 8 is press*/) 
+                                {                                
+                                    ESP_LOGI("STATE_MACHINE", "user press 8 >>>>> switch to USER_PRESS_T8 mode");
+                                    fd_op.state = USER_PRESS_T8;
+                                    row_8_detected=col_8_detected=0; //clear int pins
+                                    gpio_intr_disable(COL_8_INT_PIN);
+                                    gpio_intr_disable(ROW_8_INT_PIN);
+                                }
+                            }
+                            else if(row_8_detected || col_8_detected)
+                            {
+                                row_8_detected=col_8_detected=0;
+                                gpio_intr_enable(COL_8_INT_PIN);
+                                gpio_intr_enable(ROW_8_INT_PIN);
                             }
                             break;
 
-                        case USER_PRESS_T8_OR_TS:
+                        case USER_PRESS_T8:
                             // waiting for user provide PW and press E
-                            printf("PRev : %x  %d\n", fd_op.prev_data[11], gpio_get_level(27));
-                            if(fd_op.prev_data[11] == 0x9c && user_pressed_E && (fd_op.data[19] & 0x0F) == 0x04) {  // Check final PW char and btn E
-                                    ESP_LOGI("STATE_MACHINE", "Clear working shift  >>>>> switch to USER_RESET_WORKING_SHIFT mode");
-                                    fd_op.state = USER_RESET_WORKING_SHIFT;
-                            } else if (fd_op.prev_data[11] == 0x9c && user_pressed_E && (fd_op.data[19] & 0x0F) == 0x05) { // Pressed T$
-                                    ESP_LOGI("STATE_MACHINE", "Check  the entire data  >>>>> switch to USER_CHECK_ENTIRE_SHIFT mode");
-                                    fd_op.state = USER_CHECK_ENTIRE_SHIFT;
-                            // } else if ((fd_op.data[19] & 0x0F) == 0x04) {
-                            //     ESP_LOGI("STATE_MACHINE", "Check data succeed  >>>>> switch to IDLE mode");
-                            //     fd_op.state = IDLE;
-                            } else {
-                                copy_21_bytes(fd_op.prev_data, fd_op.data);
-                                continue;
+                            //printf("PRev : %x  %d\n", fd_op.prev_data[11], gpio_get_level(27));
+                            if(fd_op.data[11] == 0x9c ) //Password is filled
+                            {
+                                fd_op.state=USER_FILL_PW;
+                                gpio_intr_enable(COL_E_INT_PIN); 
+                                gpio_intr_enable(ROW_E_INT_PIN);
+                                row_E_detected=col_E_detected=0;
+                                ESP_LOGI("STATE_MACHINE", "USER_FILL_PW >>>>> Enable E button intterupt");
                             }
+                            copy_21_bytes(fd_op.prev_data, fd_op.data); //save current data                                         
+
                             //gpio_intr_enable(27);
                             break;
                         case USER_RESET_WORKING_SHIFT: 
-                            for(int j = 0; j < 21; j++) {
-                                DecToHexStr(fd_op.data[j],fd_op.c_data+j*2);
-                                printf("%x ", fd_op.data[j]);
+                            if((fd_op.data[19] & 0x0F) == 0x04) {  
+                                for(int j = 0; j < 21; j++) {
+                                    DecToHexStr(fd_op.data[j],fd_op.c_data+j*2);
+                                    printf("%x ", fd_op.data[j]);
+                                }
+                                fd_op.c_data[0]=0xF0; //special character for sending end shift
+                                if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
+                                    printf("Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                    ESP_LOGI("STATE_MACHINE", "Clear working shift succeed  >>>>> switch to IDLE mode");
+                                    fd_op.state = IDLE;
+                                }
                             }
-                            fd_op.c_data[0]=0xF0;
-                            if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                printf("Read successfully, send data: %s  to queue\n", fd_op.c_data);
-                                ESP_LOGI("STATE_MACHINE", "Clear working shift succeed  >>>>> switch to IDLE mode");
-                                fd_op.state = IDLE;
+                            else
+                            {
+                                fd_op.state=USER_PRESS_T8;
+                                ESP_LOGI("STATE_MACHINE", "Wrong password >>>>> switch to USER_PRESS_T8 mode");
                             }
                             break;
                         case USER_CHECK_WORKING_SHIFT:
                         case USER_CHECK_ENTIRE_SHIFT:
+                            break;
                         case USER_FILL_PW:
+                            if(row_E_detected && col_E_detected) // Check final PW char and btn E
+                            {
+                                printf("row_E_detected %d, col_E_detected %d, fd_op.data[19] %d\n",row_E_detected,col_E_detected, fd_op.data[19]);
+                                row_E_detected=col_E_detected=0; //clear int pins
+                                gpio_intr_disable(COL_E_INT_PIN);
+                                gpio_intr_disable(ROW_E_INT_PIN);
+                                fd_op.state = USER_RESET_WORKING_SHIFT;//USER_RESET_WORKING_SHIFT_E_BTN_CHECK;
+                                // if((fd_op.data[19] & 0x0F) == 0x04) {  
+                                //         ESP_LOGI("STATE_MACHINE", "Clear working shift  >>>>> switch to USER_RESET_WORKING_SHIFT mode");
+                                //         fd_op.state = USER_RESET_WORKING_SHIFT;//USER_RESET_WORKING_SHIFT_E_BTN_CHECK;
+                                // }
+                            }
+                            else if(row_E_detected || col_E_detected)
+                            {
+                                row_E_detected=col_E_detected=0; 
+                                gpio_intr_enable(COL_E_INT_PIN);
+                                gpio_intr_enable(ROW_E_INT_PIN);
+                                printf("Clear col and row to zero\n");
+                            }
+                            break;
                         case RESET_WORKING_SHIFT:
                             break;
                     }
@@ -244,15 +297,43 @@ static void read_rs232_task(void *arg)
 
     }
 }
-static volatile int disable_intr_times = 0;  // use this to calculate how many times it go into interrupt
 
-void IRAM_ATTR btn_E_gpio_isr_handler(void* arg)
+void IRAM_ATTR row_btn_8_gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
-    disable_intr_times++;
-    esp_rom_printf("GPIO[%d] intr, val: %d, disable_intr_times = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times);
+    disable_intr_times_1++;
+    row_8_detected=1;
+    esp_rom_printf("GPIO[%d] intr, row_8_detected rising %d, disable_intr_times_1 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
     gpio_intr_disable(gpio_num);
 }
+
+void IRAM_ATTR col_btn_8_gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    disable_intr_times_2++;
+    col_8_detected=1;
+    esp_rom_printf("GPIO[%d] intr, col_8_detected falling %d, disable_intr_times_2 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
+    gpio_intr_disable(gpio_num);
+}
+
+void IRAM_ATTR row_btn_E_gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    disable_intr_times_3++;
+    row_E_detected=1;
+    esp_rom_printf("GPIO[%d] intr, row_E_detected rising %d, disable_intr_times_3 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
+    gpio_intr_disable(gpio_num);
+}
+
+void IRAM_ATTR col_btn_E_gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    disable_intr_times_4++;
+    col_E_detected=1;
+    esp_rom_printf("GPIO[%d] intr, col_E_detected falling %d, disable_intr_times_4 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
+    gpio_intr_disable(gpio_num);
+}
+
 
 static gpio_config_t init_io(gpio_num_t num)
 {
@@ -267,23 +348,68 @@ static gpio_config_t init_io(gpio_num_t num)
 }
 
 void config_btn_E_interrupt() {
-    gpio_config_t io_int_config=init_io(E_INT_PIN);
+    gpio_config_t io_int_row_8_config=init_io(ROW_8_INT_PIN);
+    gpio_config_t io_int_col_8_config=init_io(COL_8_INT_PIN);
+    gpio_config_t io_int_row_E_config=init_io(ROW_E_INT_PIN);
+    gpio_config_t io_int_col_E_config=init_io(COL_E_INT_PIN);
+#if 1
+    //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
+    io_int_row_8_config.intr_type = GPIO_INTR_ANYEDGE;
+    io_int_row_8_config.mode = GPIO_MODE_INPUT;
+    io_int_row_8_config.pull_up_en = 1;
+    gpio_config(&io_int_row_8_config);
+    gpio_set_intr_type(ROW_8_INT_PIN, GPIO_INTR_POSEDGE); //rising edge detecting
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(ROW_8_INT_PIN, row_btn_8_gpio_isr_handler, (void *) ROW_8_INT_PIN);
+    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
+    gpio_intr_disable(ROW_8_INT_PIN);
+    printf("get level:%d\n", gpio_get_level(ROW_8_INT_PIN));
+
+    
+
+    // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
+    io_int_col_8_config.intr_type = GPIO_INTR_ANYEDGE;
+    io_int_col_8_config.mode = GPIO_MODE_INPUT;
+    io_int_col_8_config.pull_up_en = 1;
+    gpio_config(&io_int_col_8_config);
+    gpio_set_intr_type(COL_8_INT_PIN, GPIO_INTR_NEGEDGE); //falling edge detecting 
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(COL_8_INT_PIN, col_btn_8_gpio_isr_handler, (void *) COL_8_INT_PIN);
+    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
+    gpio_intr_disable(COL_8_INT_PIN);
+    printf("get level:%d\n", gpio_get_level(COL_8_INT_PIN));
+#endif
 
     //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
-    io_int_config.intr_type = GPIO_INTR_ANYEDGE;
-    io_int_config.mode = GPIO_MODE_INPUT;
-    io_int_config.pull_up_en = 1;
-    gpio_config(&io_int_config);
-    gpio_set_intr_type(E_INT_PIN, GPIO_INTR_LOW_LEVEL);
+    io_int_row_E_config.intr_type = GPIO_INTR_ANYEDGE;
+    io_int_row_E_config.mode = GPIO_MODE_INPUT;
+    io_int_row_E_config.pull_up_en = 1;
+    gpio_config(&io_int_row_E_config);
+    gpio_set_intr_type(ROW_E_INT_PIN, GPIO_INTR_POSEDGE); //rising edge detecting
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(E_INT_PIN, btn_E_gpio_isr_handler, (void *) E_INT_PIN);
+    gpio_isr_handler_add(ROW_E_INT_PIN, row_btn_E_gpio_isr_handler, (void *) ROW_E_INT_PIN);
+    gpio_intr_disable(ROW_E_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    printf("get level:%d\n", gpio_get_level(E_INT_PIN));
+    printf("get level:%d\n", gpio_get_level(ROW_E_INT_PIN));
+
+
+    // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
+    io_int_col_E_config.intr_type = GPIO_INTR_ANYEDGE;
+    io_int_col_E_config.mode = GPIO_MODE_INPUT;
+    io_int_col_E_config.pull_up_en = 1;
+    gpio_config(&io_int_col_E_config);
+    gpio_set_intr_type(COL_E_INT_PIN, GPIO_INTR_NEGEDGE); //falling edge detecting 
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(COL_E_INT_PIN, col_btn_E_gpio_isr_handler, (void *) COL_E_INT_PIN);
+    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
+    gpio_intr_disable(COL_E_INT_PIN);
+    printf("get level:%d\n", gpio_get_level(COL_E_INT_PIN));
 
     // gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 );
     //gpio_isr_handler_add(E_INT_PIN, btn_E_gpio_isr_handler, (void*) E_INT_PIN);
     //gpio_set_level(1);
 }
+
 void rs232_config(void)
 {
     /* Configure parameters of an UART driver,
