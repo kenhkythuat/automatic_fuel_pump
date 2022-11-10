@@ -36,7 +36,7 @@ esp_mqtt_client_handle_t mqtt_client;
 void wifi_main(void);
 void rs232_config(void);
 void virtual_keypad_init();
-void change_price_by_vir_keypad();
+void change_price_by_vir_keypad(char *price);
 
 // OTA function
 void ota_update(char *url);
