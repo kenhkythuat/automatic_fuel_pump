@@ -70,25 +70,26 @@ static void setNewPrice(uint16_t u16NewPrice)
     nvs_handle nodeconfig_hdl = 0;
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
-    err=nvs_set_u8(nodeconfig_hdl,"price",u16NewPrice);
+    err=nvs_set_u16(nodeconfig_hdl,"price",u16NewPrice);
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
-
+static uint8_t u8_subscribed=false;
 static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id=0;
-    char tb_topic_price[64],tb_topic_fw[64];
+    char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64];
     // your_context_t *context = event->context;
     sprintf(tb_topic_price, "/station/price/diesel_%d",u8DeviceId);
     sprintf(tb_topic_fw, "/station/fw_version/diesel_%d",u8DeviceId);
-    sprintf(tb_topic_price, "/station/End_Session/diesel_%d",u8DeviceId);
+    sprintf(tb_topic_endsession, "/station/End_Session/diesel_%d",u8DeviceId);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // subcribe to data topic QoS0
-            
+            msg_id = esp_mqtt_client_subscribe(client, tb_topic_endsession, 0);
+            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
             ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
@@ -119,51 +120,56 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                 printf("Json can not parse\n");
                 break;
             }
-            
             if(cJSON_GetObjectItem(json_obj, "price") != NULL) 
+            {
                 if(atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring) !=u16CurPrice)
                 {                    
-                    //update current price to new price and store in NVS
-                    u16CurPrice=atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring);
-                    setNewPrice(u16CurPrice);
+                //update current price to new price and store in NVS
+                u16CurPrice=atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                setNewPrice(u16CurPrice);
 
-                    //Send new price to device via simulated keypad
-                    xTaskCreate(&change_price_by_vir_keypad, 
-                                "change_price_by_vir_keypad", 
+                //Send new price to device via simulated keypad
+                xTaskCreate(&change_price_by_vir_keypad, 
+                "change_price_by_vir_keypad", 
+                2048, 
+                cJSON_GetObjectItem(json_obj, "price")->valuestring, 
+                configMAX_PRIORITIES-1, 
+                NULL);
+                // &my_task_handler);
+                //change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                }
+                u8_subscribed=true;
+            }
+            if(u8_subscribed) //skip the first event after subscribed
+            {
+                if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
+                {
+                    int getFwVer=atoi(cJSON_GetObjectItem(json_obj, "fw_version")->valuestring);
+                    printf("FW version : %d\n",getFwVer);
+                    if(getFwVer>u8FwVerion)
+                    {
+                        u8FwVerion=getFwVer;
+                        setFW_version(u8FwVerion);
+                        // update Operation Mode in NVS
+                        setOperationMode_version(FW_OTA_MODE);
+                        esp_restart();  
+                    }
+                }  
+                if(cJSON_GetObjectItem(json_obj, "End_Session") != NULL)
+                {
+                    int end_session=atoi(cJSON_GetObjectItem(json_obj, "End_Session")->valuestring);
+                    printf("End_Session request received: %d\n",end_session);
+
+                    //Execute commands to End current session
+                    xTaskCreate(&end_session_by_vir_keypad, 
+                                "end_session_by_vir_keypad", 
                                 2048, 
-                                cJSON_GetObjectItem(json_obj, "price")->valuestring, 
+                                cJSON_GetObjectItem(json_obj, "End_Session")->valuestring, 
                                 configMAX_PRIORITIES-1, 
                                 NULL);
-                                // &my_task_handler);
-                    //change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
-                }
-            if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
-            {
-                int getFwVer=atoi(cJSON_GetObjectItem(json_obj, "fw_version")->valuestring);
-                printf("FW version : %d\n",getFwVer);
-                if(getFwVer>u8FwVerion)
-                {
-                    u8FwVerion=getFwVer;
-                    setFW_version(u8FwVerion);
-                    // update Operation Mode in NVS
-                    setOperationMode_version(FW_OTA_MODE);
-                    esp_restart();  
-                }
-            }  
-            if(cJSON_GetObjectItem(json_obj, "End_Session") != NULL)
-            {
-                int end_session=atoi(cJSON_GetObjectItem(json_obj, "End_Session")->valuestring);
-                printf("End_Session request received: %d\n",end_session);
 
-                //Execute commands to End current session
-                xTaskCreate(&end_session_by_vir_keypad, 
-                            "end_session_by_vir_keypad", 
-                            2048, 
-                            cJSON_GetObjectItem(json_obj, "End_Session")->valuestring, 
-                            configMAX_PRIORITIES-1, 
-                            NULL);
-
-            }   
+                }  
+            } 
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
