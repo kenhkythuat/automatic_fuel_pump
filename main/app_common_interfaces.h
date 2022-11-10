@@ -37,7 +37,8 @@ void wifi_main(void);
 void rs232_config(void);
 void virtual_keypad_init();
 void change_price_by_vir_keypad();
-
+//void change_price_by_vir_keypad(char *price);
+void end_session_by_vir_keypad();
 // OTA function
 void ota_update(char *url);
 void FD_wifi_mqtt_config();

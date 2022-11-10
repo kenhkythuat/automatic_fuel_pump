@@ -83,6 +83,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     // your_context_t *context = event->context;
     sprintf(tb_topic_price, "/station/price/diesel_%d",u8DeviceId);
     sprintf(tb_topic_fw, "/station/fw_version/diesel_%d",u8DeviceId);
+    sprintf(tb_topic_price, "/station/End_Session/diesel_%d",u8DeviceId);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
@@ -149,7 +150,20 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                     esp_restart();  
                 }
             }  
-               
+            if(cJSON_GetObjectItem(json_obj, "End_Session") != NULL)
+            {
+                int end_session=atoi(cJSON_GetObjectItem(json_obj, "End_Session")->valuestring);
+                printf("End_Session request received: %d\n",end_session);
+
+                //Execute commands to End current session
+                xTaskCreate(&end_session_by_vir_keypad, 
+                            "end_session_by_vir_keypad", 
+                            2048, 
+                            cJSON_GetObjectItem(json_obj, "End_Session")->valuestring, 
+                            configMAX_PRIORITIES-1, 
+                            NULL);
+
+            }   
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
