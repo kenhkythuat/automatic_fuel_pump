@@ -135,7 +135,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                                 configMAX_PRIORITIES-1, 
                                 NULL);
                                 // &my_task_handler);
-                    // change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                    //change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
                 }
             if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
             {
