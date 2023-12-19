@@ -14,7 +14,6 @@
 #include <freertos/task.h>
 #include <freertos/event_groups.h>
 
-#include <esp_log.h>
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <nvs_flash.h>
@@ -26,7 +25,7 @@
 //#include <wifi_provisioning/manager.h>
 #include <app_common_interfaces.h>
 
-static const char *TAG = "app";
+#define TAG "app"
 
 /* Signal Wi-Fi events on this event-group */
 const int WIFI_CONNECTED_EVENT = BIT0;
@@ -81,7 +80,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 // }
 
 #define EXAMPLE_ESP_WIFI_SSID      "OrangePi"
-#define EXAMPLE_ESP_WIFI_PASS      "12345678"
+#define EXAMPLE_ESP_WIFI_PASS      "smartiotadmin"
 #define EXAMPLE_ESP_MAXIMUM_RETRY  5
 #define WIFI_AP_TIMEOUT  120000/portTICK_PERIOD_MS //ms
 extern void wifi_sta_main(void)
@@ -119,17 +118,17 @@ extern void wifi_sta_main(void)
 
     /* Wait for Wi-Fi connection */
     int ret=xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, false, true, WIFI_AP_TIMEOUT);
-    printf("Wifi return : %d",ret);
+    ESP_LOGI(TAG, "Wifi return : %d",ret);
     if(ret==0) //timeout occurs should return to main boot partition (LORA)
     {
         next_partition = esp_ota_get_next_update_partition(NULL);
         err = esp_ota_set_boot_partition(next_partition);
-        printf("Wifi AP not found, reboot to main partition\n");
+        ESP_LOGE(TAG, "Wifi AP not found, reboot to main partition\n");
         esp_restart();
     }
     else
     {
-        printf("WIFI connected \n");
+        ESP_LOGI(TAG, "WIFI connected \n");
     }
 
 #ifdef MODBUS_COMM_ENABLE

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "freertos/FreeRTOS.h"
@@ -23,21 +24,24 @@ struct fuel_para {
     unsigned int money;
     unsigned int price; 
 };
-QueueHandle_t uplink_queue;
-TaskHandle_t my_task_handler;
+extern QueueHandle_t uplink_queue;
 
+// List of Global variables which use for synchronize between submodules
+extern uint8_t u8FwVerion;
+extern uint16_t u16CurPrice;
+extern uint8_t u8DeviceId;
 
-uint8_t u8FwVerion;
-uint16_t u16CurPrice;
-uint8_t u8DeviceId;
 // Wifi variables and function
-esp_mqtt_client_handle_t mqtt_client;
-
 void wifi_main(void);
+
+// rs232 configuration
 void rs232_config(void);
+
+// Keypad submodule interfaces
 void virtual_keypad_init();
 void change_price_by_vir_keypad(char *price);
 void end_session_by_vir_keypad();
+
 // OTA function
 void ota_update(char *url);
 void FD_wifi_mqtt_config();

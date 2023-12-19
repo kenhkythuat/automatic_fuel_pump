@@ -16,12 +16,8 @@
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "esp_wifi.h"
-#include "esp_log.h"
 #include "esp_event.h"
 #include "cJSON.h"
-#ifdef LORA_COMM_ENABLE 
-#include "TheThingsNetwork.h"
-#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,10 +26,19 @@ extern "C" {
 }
 #endif
 
-#define FW_URL "http://172.24.1.1:8181/atc_wifi_fw.bin"
-uint8_t operationMode ;
-//uint16_t u16Price ;
+#define TAG "MAIN"
 
+// OTA server URL
+#define FW_URL "http://172.24.1.1:8181/atc_wifi_fw.bin"
+uint8_t operationMode ; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE and OTA_MODE
+
+uint8_t u8FwVerion = 0;
+uint16_t u16CurPrice = 0;
+uint8_t u8DeviceId = 0;
+
+QueueHandle_t uplink_queue = NULL;
+
+// get NVS values
 static void getOperationMode_version()
 {
     esp_err_t err;
@@ -43,22 +48,23 @@ static void getOperationMode_version()
     ESP_ERROR_CHECK(err);
     err=nvs_get_u8(nodeconfig_hdl,"deviceId",&u8DeviceId);
     ESP_ERROR_CHECK(err);
-    printf("DeviceId %d\n",u8DeviceId);
+    ESP_LOGI(TAG, "DeviceId %d\n",u8DeviceId);
     err=nvs_get_u8(nodeconfig_hdl,"OperationMode",&operationMode);
     ESP_ERROR_CHECK(err);
-    printf("OperationMode %d\n",operationMode);
+    ESP_LOGI(TAG,"OperationMode %d\n",operationMode);
     err=nvs_get_u16(nodeconfig_hdl,"price",&u16CurPrice);
     ESP_ERROR_CHECK(err);
-    printf("Current price %d\n",u16CurPrice);
+    ESP_LOGI(TAG,"Current price %d\n",u16CurPrice);
     err=nvs_get_u8(nodeconfig_hdl,"fwVerion",&u8FwVerion);
-    printf("Fw version %d\n",u8FwVerion);
+    ESP_LOGI(TAG,"Fw version %d\n",u8FwVerion);
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
 
 extern "C" void app_main(void)
 {
-    printf("Starting app_main function...\n");
+    esp_log_level_set("*", ESP_LOG_VERBOSE);
+    ESP_LOGI(TAG,"Starting app_main function...\n");
     esp_err_t err;
     // Initialize the GPIO ISR handler service
     err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
@@ -79,6 +85,8 @@ extern "C" void app_main(void)
     getOperationMode_version();
     if(operationMode==FUEL_DISPENSER_MODE)//run fuel dispenser app
     {        
+        ESP_LOGI(TAG, "Device is running Fuel Dispenser mode");
+        // Create a queue for threads communication
         uplink_queue = xQueueCreate( 10, sizeof(uint16_t) );
         if (uplink_queue == NULL) abort();
         virtual_keypad_init();

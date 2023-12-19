@@ -5,6 +5,8 @@
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 
+#define TAG "RS232"
+
 /**
  *
  * - Port: configured UART
@@ -26,15 +28,25 @@
 
 #define BUF_SIZE (1024)
 
+
+// // old HW
+// #define COL_8_INT_PIN (27) //button col 8
+// #define ROW_8_INT_PIN (26) //button row 8
+// #define ROW_E_INT_PIN (25) //button row E
+// #define COL_E_INT_PIN (33) //button col E
+
+// new HW
 #define COL_8_INT_PIN (27) //button col 8
-#define ROW_8_INT_PIN (26) //button row 8
+#define ROW_8_INT_PIN (33) //button row 8
 #define ROW_E_INT_PIN (25) //button row E
-#define COL_E_INT_PIN (33) //button col E
+#define COL_E_INT_PIN (26) //button col E
 
 static volatile int disable_intr_times_1 = 0,disable_intr_times_2 = 0;  // use this to calculate how many times it go into interrupt
 static volatile int disable_intr_times_3 = 0,disable_intr_times_4 = 0; 
 static volatile int col_8_detected=0,row_8_detected=0;
 static volatile int col_E_detected=0,row_E_detected=0;
+
+// Util functions
 void DecToHexStr(int dec, char *str) { 
     sprintf(str, "%2x", dec); 
     if(str[0] == ' ') 
@@ -55,6 +67,8 @@ void copy_21_bytes(char dest[], const char source[]) {
         dest[i] = source[i];
     }
 }
+
+// FUEL DISPENSER STATE
 typedef enum {
     IDLE = 0,
     FUEL_PUMPING,
@@ -68,6 +82,8 @@ typedef enum {
     RESET_WORKING_SHIFT, // After filling pw, press E to reset working shift.
 } rs232_state;
 
+
+// Main struct to manage rs232 data
 typedef struct {
     rs232_state state;
     char *data;
@@ -83,6 +99,8 @@ typedef struct {
 const char T[5]  = {0x80, 0x80, 0x80, 0x80, 0x80};
 const char FILLING_PW[5] = {0xff, 0x92, 0x92, 0x88, 0x8c};
 bool user_pressed_E = false;
+
+// Thread read RS232 data and send it to MQTT thread
 static void read_rs232_task(void *arg)
 {
     int index=0;
@@ -106,16 +124,16 @@ static void read_rs232_task(void *arg)
         
         // Read data from the UART
         memset(atc_data, 0, 1);
-        int len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_RATE_MS);
+        int len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
         if(*atc_data == 65) { // Check 'A'
             memset(atc_data, 0, 1);
-            len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_RATE_MS);
+            len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
             if(*atc_data == 84) { // Check 'T'
                 memset(atc_data, 0, 1);
-                len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_RATE_MS);
+                len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
                 if(*atc_data == 67) { // Check 'C'
                     memset(fd_op.data, 0, 21);
-                    len = uart_read_bytes(FD_UART_PORT_NUM, fd_op.data, 21, 20 / portTICK_RATE_MS);
+                    len = uart_read_bytes(FD_UART_PORT_NUM, fd_op.data, 21, 20 / portTICK_PERIOD_MS);
                     // printf("byte : %d  %d  %d  %d \n", data[18], data[19], data[20],data[21]);
                     /** check byte -2 
                      * 0x44 means nozzle is not lifting
@@ -133,21 +151,21 @@ static void read_rs232_task(void *arg)
 
                     switch(fd_op.state) {
                         case IDLE:
-                            //user_pressed_E = false;
+                            user_pressed_E = false;
                             copy_21_bytes(fd_op.normal_data, fd_op.data);
                             // lift noozle, start pumping
                             if( (fd_op.data[19] & 0x0F) == 0x00) { // lift noozle, start pumping
-                                ESP_LOGI("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
+                                ESP_LOGD("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
                                 fd_op.state = FUEL_PUMPING;
                             }
                             // Press T
                             if(compare_5_bytes(fd_op.data, T) && (fd_op.data[19] & 0x0F) == 0x05) {
-                                ESP_LOGI("STATE_MACHINE", "user press T  >>>>> switch to USER_PRESS_T mode");
+                                ESP_LOGD("STATE_MACHINE", "user press T  >>>>> switch to USER_PRESS_T mode");
                                 fd_op.state = USER_PRESS_T;
                             }
                             // Press P
                             if(compare_5_bytes(fd_op.data, FILLING_PW) && (fd_op.data[19] & 0x0F) == 0x05) {
-                                ESP_LOGI("STATE_MACHINE", "user press P  >>>>> switch to USER_SET_PRICE mode");
+                                ESP_LOGD("STATE_MACHINE", "user press P  >>>>> switch to USER_SET_PRICE mode");
                                 fd_op.state = USER_SET_PRICE;
                             }
 
@@ -161,22 +179,24 @@ static void read_rs232_task(void *arg)
                             } else {
                                 real_pumping = true;
                             }
-                            printf("REAL PUMPING: %d\n", real_pumping);
+                            // ESP_LOGI(TAG,"REAL PUMPING: %d\n", real_pumping);
                             if( (fd_op.data[19] & 0x0F) == 0x04 && fd_op.prev_nozzle_stat == 0x00) { // unlift noozle, Finish pumping
                                 if(real_pumping) {
                                     for(int j = 0; j < 21; j++) {
                                         DecToHexStr(fd_op.data[j], fd_op.c_data+j*2);
-                                        printf("%x ", fd_op.data[j]);
+                                        // ESP_LOGI(TAG,"%x ", fd_op.data[j]);
                                     }
-                                    printf("Raw data: %s\n", fd_op.data);
+                                    ESP_LOGI(TAG,"Raw data: %s\n", fd_op.data);
+
+                                    // After received data, send it to MQTT thread
                                     if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                        printf("Read successfully, send data: %s  to queue\n", fd_op.c_data);
-                                        ESP_LOGI("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
+                                        ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                        ESP_LOGD("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
                                         fd_op.state = IDLE;
                                     }
                                 } else {
-                                    printf("User lifted nozzle but did not pump\n");
-                                    ESP_LOGI("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
+                                    ESP_LOGI(TAG,"User lifted nozzle but did not pump\n");
+                                    ESP_LOGD("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
                             }
@@ -190,17 +210,17 @@ static void read_rs232_task(void *arg)
                                     else
                                         DecToHexStr(fd_op.data[j], fd_op.c_data + j*2);
                                 }
-
+                                // After set price success, send the new price to MQTT thread
                                 if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                    printf("Read successfully, send data: %s  to queue\n", fd_op.c_data);
-                                    ESP_LOGI("STATE_MACHINE", "setting price is done  >>>>> switch to IDLE mode");
+                                    ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                    ESP_LOGD("STATE_MACHINE", "setting price is done  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
                             }
                             break;
                         case USER_PRESS_T:
                             if((fd_op.data[19] & 0x0F) == 0x04) {
-                                ESP_LOGI("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
+                                ESP_LOGD("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
                                 fd_op.state = IDLE;
                                 break;
                             }
@@ -213,7 +233,7 @@ static void read_rs232_task(void *arg)
                             {
                                 if(compare_5_bytes(fd_op.data, FILLING_PW) /*and button 8 is press*/) 
                                 {                                
-                                    ESP_LOGI("STATE_MACHINE", "user press 8 >>>>> switch to USER_PRESS_T8 mode");
+                                    ESP_LOGD("STATE_MACHINE", "user press 8 >>>>> switch to USER_PRESS_T8 mode");
                                     fd_op.state = USER_PRESS_T8;
                                     row_8_detected=col_8_detected=0; //clear int pins
                                     gpio_intr_disable(COL_8_INT_PIN);
@@ -237,29 +257,38 @@ static void read_rs232_task(void *arg)
                                 gpio_intr_enable(COL_E_INT_PIN); 
                                 gpio_intr_enable(ROW_E_INT_PIN);
                                 row_E_detected=col_E_detected=0;
-                                ESP_LOGI("STATE_MACHINE", "USER_FILL_PW >>>>> Enable E button intterupt");
+                                ESP_LOGD("STATE_MACHINE", "USER_PRESS_T8 >>>>> USER_FILL_PW");
+                            }
+                            if((fd_op.data[19] & 0x0F) == 0x04) {
+                                ESP_LOGD("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
+                                fd_op.state = IDLE;
+                                break;
                             }
                             copy_21_bytes(fd_op.prev_data, fd_op.data); //save current data                                         
 
                             //gpio_intr_enable(27);
                             break;
                         case USER_RESET_WORKING_SHIFT: 
+                            // if((fd_op.data[19] & 0x0F) == 0x05) {
+                            //     ESP_LOGI("tmp", "Skip 1st message");
+                            //     break;
+                            // }
                             if((fd_op.data[19] & 0x0F) == 0x04) {  
                                 for(int j = 0; j < 21; j++) {
                                     DecToHexStr(fd_op.data[j],fd_op.c_data+j*2);
-                                    printf("%x ", fd_op.data[j]);
+                                    // printf("%x ", fd_op.data[j]);
                                 }
                                 fd_op.c_data[0]=0xF0; //special character for sending end shift
                                 if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                    printf("Read successfully, send data: %s  to queue\n", fd_op.c_data);
-                                    ESP_LOGI("STATE_MACHINE", "Clear working shift succeed  >>>>> switch to IDLE mode");
+                                    ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                    ESP_LOGD("STATE_MACHINE", "Clear working shift succeed  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
                             }
                             else
                             {
                                 fd_op.state=USER_PRESS_T8;
-                                ESP_LOGI("STATE_MACHINE", "Wrong password >>>>> switch to USER_PRESS_T8 mode");
+                                ESP_LOGD("STATE_MACHINE", "Wrong password >>>>> switch to USER_PRESS_T8 mode");
                             }
                             break;
                         case USER_CHECK_WORKING_SHIFT:
@@ -268,13 +297,14 @@ static void read_rs232_task(void *arg)
                         case USER_FILL_PW:
                             if(row_E_detected && col_E_detected) // Check final PW char and btn E
                             {
-                                printf("row_E_detected %d, col_E_detected %d, fd_op.data[19] %d\n",row_E_detected,col_E_detected, fd_op.data[19]);
+                                ESP_LOGI(TAG,"row_E_detected %d, col_E_detected %d, fd_op.data[19] %d\n",row_E_detected,col_E_detected, fd_op.data[19]);
+                                user_pressed_E = true;
                                 row_E_detected=col_E_detected=0; //clear int pins
                                 gpio_intr_disable(COL_E_INT_PIN);
                                 gpio_intr_disable(ROW_E_INT_PIN);
-                                fd_op.state = USER_RESET_WORKING_SHIFT;//USER_RESET_WORKING_SHIFT_E_BTN_CHECK;
+                                
                                 // if((fd_op.data[19] & 0x0F) == 0x04) {  
-                                //         ESP_LOGI("STATE_MACHINE", "Clear working shift  >>>>> switch to USER_RESET_WORKING_SHIFT mode");
+                                //         ESP_LOGD("STATE_MACHINE", "Clear working shift  >>>>> switch to USER_RESET_WORKING_SHIFT mode");
                                 //         fd_op.state = USER_RESET_WORKING_SHIFT;//USER_RESET_WORKING_SHIFT_E_BTN_CHECK;
                                 // }
                             }
@@ -283,7 +313,22 @@ static void read_rs232_task(void *arg)
                                 row_E_detected=col_E_detected=0; 
                                 gpio_intr_enable(COL_E_INT_PIN);
                                 gpio_intr_enable(ROW_E_INT_PIN);
-                                printf("Clear col and row to zero\n");
+                                // printf("Clear col and row to zero\n");
+                            } 
+                            if(((fd_op.data[19] & 0x0F) == 0x04) && user_pressed_E) {
+                                fd_op.state = USER_RESET_WORKING_SHIFT;//USER_RESET_WORKING_SHIFT_E_BTN_CHECK;
+                                ESP_LOGD("STATE_MACHINE", "USER_FILL_PW >>>>> Enable E USER_RESET_WORKING_SHIFT");\
+                                break;
+                            } else if (((fd_op.data[19] & 0x0F) == 0x05) && user_pressed_E && fd_op.data[6] == 0xff) {
+                                fd_op.state=USER_PRESS_T8;
+                                ESP_LOGD("STATE_MACHINE", "Wrong password >>>>> switch to USER_PRESS_T8 mode");
+                                break;
+                            }
+
+                            if((fd_op.data[19] & 0x0F) == 0x04) {
+                                ESP_LOGD("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
+                                fd_op.state = IDLE;
+                                break;
                             }
                             break;
                         case RESET_WORKING_SHIFT:
@@ -363,7 +408,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(ROW_8_INT_PIN, row_btn_8_gpio_isr_handler, (void *) ROW_8_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(ROW_8_INT_PIN);
-    printf("get level:%d\n", gpio_get_level(ROW_8_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(ROW_8_INT_PIN));
 
     
 
@@ -377,7 +422,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(COL_8_INT_PIN, col_btn_8_gpio_isr_handler, (void *) COL_8_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(COL_8_INT_PIN);
-    printf("get level:%d\n", gpio_get_level(COL_8_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(COL_8_INT_PIN));
 #endif
 
     //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
@@ -390,7 +435,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(ROW_E_INT_PIN, row_btn_E_gpio_isr_handler, (void *) ROW_E_INT_PIN);
     gpio_intr_disable(ROW_E_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    printf("get level:%d\n", gpio_get_level(ROW_E_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(ROW_E_INT_PIN));
 
 
     // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
@@ -403,7 +448,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(COL_E_INT_PIN, col_btn_E_gpio_isr_handler, (void *) COL_E_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(COL_E_INT_PIN);
-    printf("get level:%d\n", gpio_get_level(COL_E_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(COL_E_INT_PIN));
 
     // gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 );
     //gpio_isr_handler_add(E_INT_PIN, btn_E_gpio_isr_handler, (void*) E_INT_PIN);
@@ -431,9 +476,9 @@ void rs232_config(void)
     ESP_ERROR_CHECK(uart_driver_install(FD_UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
     ESP_ERROR_CHECK(uart_param_config(FD_UART_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(FD_UART_PORT_NUM, FD_RS232_TXD, FD_RS232_RXD, FD_RS232_RTS, FD_RS232_CTS));
-    printf("Configure interrupt pin BTN E \n");
+    ESP_LOGI(TAG,"Configure interrupt pin BTN E \n");
     config_btn_E_interrupt();
    // pinMode()
-    printf("Create RS232 task \n");
+    ESP_LOGI(TAG,"Create RS232 task \n");
     xTaskCreate(&read_rs232_task, "read_rs232_task", FD_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES, NULL);
 }

@@ -4,7 +4,6 @@
 #include "freertos/task.h"
 #include "cJSON.h"
 #include "esp_system.h"
-#include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
@@ -33,7 +32,7 @@ static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
         ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
     }
 
-    printf("New app version: %s\n",new_app_info->version);
+    ESP_LOGI(TAG, "New app version: %s\n",new_app_info->version);
 
     // disable this feature temporarily because some issues related to set PROJECT_VER at build time
     // check App version
@@ -144,12 +143,12 @@ static void update_task(void *pvParameter) {
 void ota_update(char *url) {
     if(url == NULL)
     {
-        printf("Invalid URL!!! \n");
+        ESP_LOGE(TAG, "Invalid URL!!! \n");
         return;
     }
     fw_update_url = malloc(256);
     strcpy(fw_update_url, url);
-    printf("****************Starting updatefw from URL: %s \n", fw_update_url);
+    ESP_LOGI(TAG, "****************Starting updatefw from URL: %s \n", fw_update_url);
     // Check the validation of fw images. If OK, mark newly updated firmware image as active, or else rollback to previous fw
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_ota_img_states_t ota_state;

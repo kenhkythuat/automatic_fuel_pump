@@ -23,7 +23,7 @@
 #include "lwip/netdb.h"
 #include "cJSON.h"
 
-static const char *TAG = "MQTT";
+#define TAG "MQTT"
 
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 //extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
@@ -89,11 +89,13 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             // subcribe to data topic QoS0
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_endsession, 0);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+            ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_endsession, msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_price, 0);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+            ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_price, msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
-            ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+            ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_fw, msg_id);
+            // msg_id = esp_mqtt_client_subscribe(client, "v1/devices/me/attributes", 0);
+            // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
             break;
         case MQTT_EVENT_DISCONNECTED:
@@ -113,11 +115,11 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
-            printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-            printf("DATA=%.*s\r\n", event->data_len, event->data);
+            ESP_LOGW(TAG,"TOPIC=%.*s\r\n", event->topic_len, event->topic);
+            ESP_LOGW(TAG,"DATA=%.*s\r\n", event->data_len, event->data);
             json_obj = cJSON_Parse(event->data);
             if(json_obj == NULL) {
-                printf("Json can not parse\n");
+                ESP_LOGE(TAG, "Json can not parse\n");
                 break;
             }
             if(cJSON_GetObjectItem(json_obj, "price") != NULL) 
@@ -130,22 +132,25 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
                 //Send new price to device via simulated keypad
                 xTaskCreate(&change_price_by_vir_keypad, 
-                "change_price_by_vir_keypad", 
-                2048, 
-                cJSON_GetObjectItem(json_obj, "price")->valuestring, 
-                configMAX_PRIORITIES-1, 
-                NULL);
+                            "change_price_by_vir_keypad", 
+                            2048, 
+                            cJSON_GetObjectItem(json_obj, "price")->valuestring, 
+                            configMAX_PRIORITIES-1, 
+                            NULL);
                 // &my_task_handler);
                 //change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
                 }
                 u8_subscribed=true;
             }
-            if(u8_subscribed) //skip the first event after subscribed
-            {
+
+            // TODO: should be removed. check the current situation.
+            // if(u8_subscribed) //skip the first event after subscribed
+            // {
+                // OTA upgrade msg. Set the flag OperationMode and reboot
                 if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
                 {
                     int getFwVer=atoi(cJSON_GetObjectItem(json_obj, "fw_version")->valuestring);
-                    printf("FW version : %d\n",getFwVer);
+                    ESP_LOGI(TAG, "FW version : %d\n",getFwVer);
                     if(getFwVer>u8FwVerion)
                     {
                         u8FwVerion=getFwVer;
@@ -155,10 +160,11 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                         esp_restart();  
                     }
                 }  
+                // End Session msg. Create a thread to do endsession via virtual keyboard
                 if(cJSON_GetObjectItem(json_obj, "End_Session") != NULL)
                 {
                     int end_session=atoi(cJSON_GetObjectItem(json_obj, "End_Session")->valuestring);
-                    printf("End_Session request received: %d\n",end_session);
+                    ESP_LOGI(TAG, "End_Session request received: %d\n",end_session);
 
                     //Execute commands to End current session
                     xTaskCreate(&end_session_by_vir_keypad, 
@@ -169,7 +175,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                                 NULL);
 
                 }  
-            } 
+            // } 
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
@@ -189,28 +195,30 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 }
 
 static void FD_mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
-    ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+    ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%ld", base, event_id);
     FD_mqtt_event_handler_cb(event_data);
 }
 #define ORP 1
 static void FD_mqtt_app_start(void)
 {   
     esp_mqtt_client_config_t mqtt_cfg = {
-        #ifdef ORP
-        .uri = "mqtt://172.24.1.1/", //@ORP
-        #else
-        .uri = "mqtt://192.168.5.1/", //RPI4
-        #endif
-        .port = 1883,
+// espidf 5.1.2 changes
+        // #ifdef ORP
+        // .uri = "mqtt://172.24.1.1/", //@ORP
+        // #else
+        // .uri = "mqtt://192.168.5.1/", //RPI4
+        // #endif
+        // .port = 1883,
         // .username = "aVq7QQIRXQ82gCQiXfjX"
+        .broker.address.uri = "mqtt://172.24.1.1:1883",
     };
 
 
     client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, FD_mqtt_event_handler, client);
     esp_mqtt_client_start(client);
-    printf("Setup done \n");
-    vTaskDelay(pdMS_TO_TICKS(10000));
+    ESP_LOGI(TAG, "Setup done \n");
+    vTaskDelay(pdMS_TO_TICKS(2000));
 }
 
 static int push_msg(char *msg_payload, uint16_t msg_len) {
@@ -248,27 +256,25 @@ void push_msg_to_broker(void) {
         {
             if(c_data[0]==0xF0)//process for end session pressed
             {
-                printf("Sending end session signal to server\n");
-                sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"gasoline",1);
-                stat = push_heartbeat_msg(payload,strlen(payload));
+                ESP_LOGI(TAG, "Sending end session signal to server\n");
+                sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"diesel",1);
+                ESP_LOGD(TAG, "Payload: %s\n", payload);
+                stat = push_msg(payload,strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
-            }
-            else
-            {
-            printf("\nData: %s\n", c_data);
-            strncpy(liter, c_data, 10);
-            strncpy(money, c_data+10, 10);
-            strncpy(price, c_data+20, 6);
-            printf("liter: %s\n", liter);
-                            
-            esp_wifi_sta_get_ap_info(&ap);
-            printf("Free heap size: %d bytes\n", esp_get_minimum_free_heap_size());
-            // printf("c_data[39] = %d\n",c_data[39]);
-            // if(c_data[39] == 5)
-            //     continue;
-            // if int(byte_hex[-3]) != prev_stat and int(byte_hex[-3]) == 4:
-            //printf("Setprice value : %d\n", bset_price);
-            // if(!bset_price) {
+            } else {
+                ESP_LOGI(TAG, "\nData: %s\n", c_data);
+                strncpy(liter, c_data, 10);
+                strncpy(money, c_data+10, 10);
+                strncpy(price, c_data+20, 6);
+                                
+                esp_wifi_sta_get_ap_info(&ap);
+                ESP_LOGD(TAG, "Free heap size: %ld bytes\n", esp_get_minimum_free_heap_size());
+                // printf("c_data[39] = %d\n",c_data[39]);
+                // if(c_data[39] == 5)
+                //     continue;
+                // if int(byte_hex[-3]) != prev_stat and int(byte_hex[-3]) == 4:
+                //printf("Setprice value : %d\n", bset_price);
+                // if(!bset_price) {
 #if 0
                 lit = rand() % 100;
                 sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
@@ -281,7 +287,7 @@ void push_msg_to_broker(void) {
 #else
                 sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
                         u8DeviceId, 
-                        "gasoline", 
+                        "diesel", 
                         atoi(liter), 
                         atoi(money), 
                         atoi(price),  
@@ -290,7 +296,7 @@ void push_msg_to_broker(void) {
                 // For testing:
                 // idx++;
                 // sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 1, "gasoline", idx, idx, idx, ap.rssi);
-                printf("Payload: %s\n", payload);
+                ESP_LOGD(TAG, "Payload: %s\n", payload);
                 // stat = esp_mqtt_client_publish(client, "/station/data", payload, strlen(payload), 0, false);
                 stat = push_msg(payload, strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
@@ -306,15 +312,21 @@ void push_msg_to_broker(void) {
 
 void ping_tb(void) {
     int stat;
+    wifi_ap_record_t ap;
     //wifi_ap_record_t ap;
     for(;;) {
         //esp_wifi_sta_get_ap_info(&ap);
         //printf("Free heap size: %d bytes\n", esp_get_minimum_free_heap_size());
  
         // stat = esp_mqtt_client_publish(client, "/station/data", payload_ping, strlen(payload_ping), 0, false);
-        sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d}",u8DeviceId,"gasoline",1);
+        esp_wifi_sta_get_ap_info(&ap);
+        sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
+                            u8DeviceId,
+                            "diesel",
+                            1,
+                            ap.rssi);
         stat = push_heartbeat_msg(payload,strlen(payload));
-        printf("Ping MSG successfully\n");
+        ESP_LOGI(TAG, "Ping MSG successfully\n");
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
@@ -328,7 +340,7 @@ void FD_wifi_mqtt_config(void)
 
     FD_mqtt_app_start();
     rs232_config();
-    printf("RS232 config done\n");
+    ESP_LOGI(TAG, "RS232 config done\n");
     push_msg_sem = xSemaphoreCreateBinary();
     xSemaphoreGive(push_msg_sem);
     xTaskCreate(&push_msg_to_broker, "push_msg_to_broker", 2048, NULL, configMAX_PRIORITIES-1, NULL);

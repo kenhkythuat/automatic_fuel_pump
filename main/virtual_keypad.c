@@ -1,5 +1,8 @@
 #include "app_common_interfaces.h"
 #include "driver/gpio.h"
+
+#define TAG "VIR_KEYPAD"
+
 #define PIN_CHANEL_SELECT_1A 14
 #define PIN_CHANEL_SELECT_1B 12
 #define PIN_CHANEL_SELECT_1C 13
@@ -66,14 +69,14 @@ static void psudoe_press(uint8_t cluster, uint8_t pin) {
         vTaskDelay(pdMS_TO_TICKS(500));
         gpio_set_level(PIN_INH_CLUSTER_2, 1); 
     } else {
-        printf("ERROR: Invalid cluster\n");
+        ESP_LOGI(TAG,"ERROR: Invalid cluster\n");
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 void virtual_keypad_init() {
     for(int i=0; i<MAPPING_TABLE_SIZE; i++) {
-        gpio_pad_select_gpio(pin_control[i]);
+        esp_rom_gpio_pad_select_gpio(pin_control[i]);
         gpio_set_direction(pin_control[i], GPIO_MODE_OUTPUT);
         if(pin_control[i] == PIN_INH_CLUSTER_1 || pin_control[i] == PIN_INH_CLUSTER_2) // Set INH to HIGH to disable all channels
             gpio_set_level(pin_control[i], 1); 
@@ -89,7 +92,7 @@ void change_price_by_vir_keypad(char *price) {
     
     xSemaphoreTake(set_price_task_sem, portMAX_DELAY);
     //bset_price = true;
-    printf("Press: ");
+    ESP_LOGI(TAG,"Press: ");
     for(int i = 0; i < sizeof(order); i++) {
         for(int j = 0; j < MAPPING_TABLE_SIZE; j++) {
             if(order[i] == mapping_table_1[j].btn) 
@@ -108,7 +111,7 @@ void change_price_by_vir_keypad(char *price) {
         }
     }
     psudoe_press(2,1); // Press E to confirm the price
-    printf("Session end.\n\n");
+    ESP_LOGI(TAG,"Change price Session completed.\n\n");
     //bset_price = false;
     xSemaphoreGive(set_price_task_sem);
     vTaskDelete(NULL);
@@ -120,7 +123,7 @@ void end_session_by_vir_keypad() {
     
     xSemaphoreTake(set_price_task_sem, portMAX_DELAY);
     //bset_price = true;
-    printf("End_Session start..........\n ");
+    ESP_LOGI(TAG,"End_Session start..........\n ");
     //end_session[9] = {'T', '8','1', '2', '3','4', '5','6','E'} -> array of characters for end current session
     for(int i = 0; i < sizeof(end_session); i++) {
         for(int j = 0; j < MAPPING_TABLE_SIZE; j++) {
@@ -130,7 +133,7 @@ void end_session_by_vir_keypad() {
                 psudoe_press(2, mapping_table_2[j].pin);
         }
     }
-    printf("End_Session completed\n\n");    
+    ESP_LOGI(TAG,"End_Session completed\n\n");    
     //bset_price = false;
     xSemaphoreGive(set_price_task_sem);
     vTaskDelete(NULL);
