@@ -80,6 +80,7 @@ typedef enum {
     USER_CHECK_ENTIRE_SHIFT, // T $ 123456
     USER_FILL_PW,
     RESET_WORKING_SHIFT, // After filling pw, press E to reset working shift.
+    USER_SETUP_MONEY_LITTER, // $ or L
 } rs232_state;
 
 
@@ -98,6 +99,9 @@ typedef struct {
 } rs232_obj;
 const char T[5]  = {0x80, 0x80, 0x80, 0x80, 0x80};
 const char FILLING_PW[5] = {0xff, 0x92, 0x92, 0x88, 0x8c};
+const char SETUP_MONEY[5] = {0x87, 0x88, 0x21, 0xf9, 0x88};
+const char SETUP_LITTER[5] = {0x87, 0x88, 0xa1, 0xf9, 0x88};
+const char LIFT_NOZZLE[5] = {0, 0, 0, 0, 0};
 bool user_pressed_E = false;
 
 // Thread read RS232 data and send it to MQTT thread
@@ -154,7 +158,7 @@ static void read_rs232_task(void *arg)
                             user_pressed_E = false;
                             copy_21_bytes(fd_op.normal_data, fd_op.data);
                             // lift noozle, start pumping
-                            if( (fd_op.data[19] & 0x0F) == 0x00) { // lift noozle, start pumping
+                            if( (fd_op.data[19] & 0x0F) == 0x00 && compare_5_bytes(fd_op.data, LIFT_NOZZLE)) { // lift noozle, start pumping
                                 ESP_LOGD("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
                                 fd_op.state = FUEL_PUMPING;
                             }
@@ -167,6 +171,32 @@ static void read_rs232_task(void *arg)
                             if(compare_5_bytes(fd_op.data, FILLING_PW) && (fd_op.data[19] & 0x0F) == 0x05) {
                                 ESP_LOGD("STATE_MACHINE", "user press P  >>>>> switch to USER_SET_PRICE mode");
                                 fd_op.state = USER_SET_PRICE;
+                            }
+                            // Press L
+                            if(compare_5_bytes(fd_op.data, SETUP_LITTER) && (fd_op.data[19] & 0x0F) == 0x05) {
+                                ESP_LOGD("STATE_MACHINE", "user press L  >>>>> switch to USER_SETUP_MONEY_LITTER mode");
+                                fd_op.state = USER_SETUP_MONEY_LITTER;
+                            }
+                            // Press $
+                            if(compare_5_bytes(fd_op.data + 6, SETUP_MONEY) && (fd_op.data[19] & 0x0F) == 0x05) {
+                                ESP_LOGD("STATE_MACHINE", "user press $  >>>>> switch to USER_SETUP_MONEY_LITTER mode");
+                                fd_op.state = USER_SETUP_MONEY_LITTER;
+                            }
+                            
+
+                            break;
+
+                        case USER_SETUP_MONEY_LITTER:
+                            if((fd_op.data[19] & 0x0F) == 0x04) {
+                                ESP_LOGD("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
+                                fd_op.state = IDLE;
+                                break;
+                            }
+
+                            // lift noozle, start pumping
+                            if( (fd_op.data[19] & 0x0F) == 0x00 && compare_5_bytes(fd_op.data, LIFT_NOZZLE)) { // lift noozle, start pumping
+                                ESP_LOGD("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
+                                fd_op.state = FUEL_PUMPING;
                             }
 
                             break;

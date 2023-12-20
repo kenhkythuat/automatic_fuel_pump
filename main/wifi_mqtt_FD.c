@@ -229,6 +229,14 @@ static int push_msg(char *msg_payload, uint16_t msg_len) {
     return stat;
 }
 
+static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {
+    int stat;
+    xSemaphoreTake(push_msg_sem, portMAX_DELAY);
+    stat = esp_mqtt_client_publish(client, "/station/special_action", msg_payload, msg_len, 0, false);
+    xSemaphoreGive(push_msg_sem);
+    return stat;
+}
+
 //Send heart beat msg every 5min to maintain connection with TB server
 //Send heart beat msg every 5min to maintain connection with TB server
 static int push_heartbeat_msg(char *msg_payload, uint16_t msg_len)
@@ -259,7 +267,7 @@ void push_msg_to_broker(void) {
                 ESP_LOGI(TAG, "Sending end session signal to server\n");
                 sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"diesel",1);
                 ESP_LOGD(TAG, "Payload: %s\n", payload);
-                stat = push_msg(payload,strlen(payload));
+                stat = push_special_action_msg(payload,strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
             } else {
                 ESP_LOGI(TAG, "\nData: %s\n", c_data);
