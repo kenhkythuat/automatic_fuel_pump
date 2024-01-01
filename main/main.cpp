@@ -65,6 +65,7 @@ extern "C" void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     ESP_LOGI(TAG,"Starting app_main function...\n");
+    ESP_LOGI(TAG,"FW version 1.0\n");
     esp_err_t err;
     // Initialize the GPIO ISR handler service
     err = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);

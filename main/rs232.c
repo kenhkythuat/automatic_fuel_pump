@@ -158,7 +158,7 @@ static void read_rs232_task(void *arg)
                             user_pressed_E = false;
                             copy_21_bytes(fd_op.normal_data, fd_op.data);
                             // lift noozle, start pumping
-                            if( (fd_op.data[19] & 0x0F) == 0x00 && compare_5_bytes(fd_op.data, LIFT_NOZZLE)) { // lift noozle, start pumping
+                            if( (fd_op.data[19] & 0x0F) == 0x00 ) { // lift noozle, start pumping
                                 ESP_LOGD("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
                                 fd_op.state = FUEL_PUMPING;
                             }

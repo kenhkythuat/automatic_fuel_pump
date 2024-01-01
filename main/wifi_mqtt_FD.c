@@ -81,9 +81,9 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     int msg_id=0;
     char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64];
     // your_context_t *context = event->context;
-    sprintf(tb_topic_price, "/station/price/diesel_%d",u8DeviceId);
-    sprintf(tb_topic_fw, "/station/fw_version/diesel_%d",u8DeviceId);
-    sprintf(tb_topic_endsession, "/station/End_Session/diesel_%d",u8DeviceId);
+    sprintf(tb_topic_price, "/station/price/fs_node_1201440612_%d",u8DeviceId);
+    sprintf(tb_topic_fw, "/station/fw_version/fs_node_1201440612_%d",u8DeviceId);
+    sprintf(tb_topic_endsession, "/station/End_Session/fs_node_1201440612_%d",u8DeviceId);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
@@ -265,7 +265,7 @@ void push_msg_to_broker(void) {
             if(c_data[0]==0xF0)//process for end session pressed
             {
                 ESP_LOGI(TAG, "Sending end session signal to server\n");
-                sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"diesel",1);
+                sprintf(payload,"{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"diesel",1);
                 ESP_LOGD(TAG, "Payload: %s\n", payload);
                 stat = push_special_action_msg(payload,strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
@@ -285,7 +285,7 @@ void push_msg_to_broker(void) {
                 // if(!bset_price) {
 #if 0
                 lit = rand() % 100;
-                sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
+                sprintf(payload, "{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
                         3, 
                         "diesel", 
                         lit, 
@@ -293,7 +293,7 @@ void push_msg_to_broker(void) {
                         atoi(price),  
                         ap.rssi);
 #else
-                sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
+                sprintf(payload, "{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
                         u8DeviceId, 
                         "diesel", 
                         atoi(liter), 
@@ -303,7 +303,7 @@ void push_msg_to_broker(void) {
 #endif
                 // For testing:
                 // idx++;
-                // sprintf(payload, "{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 1, "gasoline", idx, idx, idx, ap.rssi);
+                // sprintf(payload, "{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 1, "gasoline", idx, idx, idx, ap.rssi);
                 ESP_LOGD(TAG, "Payload: %s\n", payload);
                 // stat = esp_mqtt_client_publish(client, "/station/data", payload, strlen(payload), 0, false);
                 stat = push_msg(payload, strlen(payload));
@@ -328,7 +328,7 @@ void ping_tb(void) {
  
         // stat = esp_mqtt_client_publish(client, "/station/data", payload_ping, strlen(payload_ping), 0, false);
         esp_wifi_sta_get_ap_info(&ap);
-        sprintf(payload,"{\"DevID\": \"diesel_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
+        sprintf(payload,"{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
                             u8DeviceId,
                             "diesel",
                             1,
