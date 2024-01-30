@@ -216,16 +216,16 @@ static void read_rs232_task(void *arg)
                                         DecToHexStr(fd_op.data[j], fd_op.c_data+j*2);
                                         // ESP_LOGI(TAG,"%x ", fd_op.data[j]);
                                     }
-                                    ESP_LOGI(TAG,"Raw data: %s\n", fd_op.data);
+                                    // ESP_LOGI(TAG,"Raw data: %s\n", fd_op.data);
 
                                     // After received data, send it to MQTT thread
                                     if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                        ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                        ESP_LOGI(TAG,"Read successfully, send data to queue");
                                         ESP_LOGD("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
                                         fd_op.state = IDLE;
                                     }
                                 } else {
-                                    ESP_LOGI(TAG,"User lifted nozzle but did not pump\n");
+                                    ESP_LOGI(TAG,"User lifted nozzle but did not pump");
                                     ESP_LOGD("STATE_MACHINE", "user unlift nozzle  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
@@ -242,7 +242,7 @@ static void read_rs232_task(void *arg)
                                 }
                                 // After set price success, send the new price to MQTT thread
                                 if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                    ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                    ESP_LOGI(TAG,"Read successfully, send data to queue");
                                     ESP_LOGD("STATE_MACHINE", "setting price is done  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
@@ -310,7 +310,7 @@ static void read_rs232_task(void *arg)
                                 }
                                 fd_op.c_data[0]=0xF0; //special character for sending end shift
                                 if(xQueueSend(uplink_queue, (void *)&fd_op.c_data, 10) == pdTRUE) {   
-                                    ESP_LOGI(TAG,"Read successfully, send data: %s  to queue\n", fd_op.c_data);
+                                    ESP_LOGI(TAG,"Read successfully, send data to queue");
                                     ESP_LOGD("STATE_MACHINE", "Clear working shift succeed  >>>>> switch to IDLE mode");
                                     fd_op.state = IDLE;
                                 }
@@ -327,7 +327,7 @@ static void read_rs232_task(void *arg)
                         case USER_FILL_PW:
                             if(row_E_detected && col_E_detected) // Check final PW char and btn E
                             {
-                                ESP_LOGI(TAG,"row_E_detected %d, col_E_detected %d, fd_op.data[19] %d\n",row_E_detected,col_E_detected, fd_op.data[19]);
+                                ESP_LOGI(TAG,"row_E_detected %d, col_E_detected %d, fd_op.data[19] %d",row_E_detected,col_E_detected, fd_op.data[19]);
                                 user_pressed_E = true;
                                 row_E_detected=col_E_detected=0; //clear int pins
                                 gpio_intr_disable(COL_E_INT_PIN);
@@ -378,7 +378,7 @@ void IRAM_ATTR row_btn_8_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_1++;
     row_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_8_detected rising %d, disable_intr_times_1 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
+    esp_rom_printf("GPIO[%d] intr, row_8_detected rising %d, disable_intr_times_1 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
     gpio_intr_disable(gpio_num);
 }
 
@@ -387,7 +387,7 @@ void IRAM_ATTR col_btn_8_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_2++;
     col_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_8_detected falling %d, disable_intr_times_2 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
+    esp_rom_printf("GPIO[%d] intr, col_8_detected falling %d, disable_intr_times_2 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
     gpio_intr_disable(gpio_num);
 }
 
@@ -396,7 +396,7 @@ void IRAM_ATTR row_btn_E_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_3++;
     row_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_E_detected rising %d, disable_intr_times_3 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
+    esp_rom_printf("GPIO[%d] intr, row_E_detected rising %d, disable_intr_times_3 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
     gpio_intr_disable(gpio_num);
 }
 
@@ -405,7 +405,7 @@ void IRAM_ATTR col_btn_E_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_4++;
     col_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_E_detected falling %d, disable_intr_times_4 = %d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
+    esp_rom_printf("GPIO[%d] intr, col_E_detected falling %d, disable_intr_times_4 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
     gpio_intr_disable(gpio_num);
 }
 
@@ -438,7 +438,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(ROW_8_INT_PIN, row_btn_8_gpio_isr_handler, (void *) ROW_8_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(ROW_8_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(ROW_8_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d", gpio_get_level(ROW_8_INT_PIN));
 
     
 
@@ -452,7 +452,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(COL_8_INT_PIN, col_btn_8_gpio_isr_handler, (void *) COL_8_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(COL_8_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(COL_8_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d", gpio_get_level(COL_8_INT_PIN));
 #endif
 
     //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
@@ -465,7 +465,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(ROW_E_INT_PIN, row_btn_E_gpio_isr_handler, (void *) ROW_E_INT_PIN);
     gpio_intr_disable(ROW_E_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(ROW_E_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d", gpio_get_level(ROW_E_INT_PIN));
 
 
     // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
@@ -478,7 +478,7 @@ void config_btn_E_interrupt() {
     gpio_isr_handler_add(COL_E_INT_PIN, col_btn_E_gpio_isr_handler, (void *) COL_E_INT_PIN);
     //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
     gpio_intr_disable(COL_E_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d\n", gpio_get_level(COL_E_INT_PIN));
+    ESP_LOGI(TAG,"get level:%d", gpio_get_level(COL_E_INT_PIN));
 
     // gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 );
     //gpio_isr_handler_add(E_INT_PIN, btn_E_gpio_isr_handler, (void*) E_INT_PIN);
@@ -506,7 +506,7 @@ void rs232_config(void)
     ESP_ERROR_CHECK(uart_driver_install(FD_UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
     ESP_ERROR_CHECK(uart_param_config(FD_UART_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(FD_UART_PORT_NUM, FD_RS232_TXD, FD_RS232_RXD, FD_RS232_RTS, FD_RS232_CTS));
-    ESP_LOGI(TAG,"Configure interrupt pin BTN E \n");
+    ESP_LOGI(TAG,"Configure interrupt pin BTN E ");
     config_btn_E_interrupt();
    // pinMode()
     ESP_LOGI(TAG,"Create RS232 task \n");

@@ -74,16 +74,38 @@ static void setNewPrice(uint16_t u16NewPrice)
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
+
+static void setDeviceID(char* m_deviceID) 
+{
+    if (!strcmp(deviceID, m_deviceID)) {
+        return;
+    }
+    esp_err_t err;
+    nvs_handle nodeconfig_hdl = 0;
+    err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
+    err=nvs_set_str(nodeconfig_hdl,"deviceId",m_deviceID);
+    ESP_ERROR_CHECK(err);
+    nvs_close(nodeconfig_hdl);
+    esp_restart();
+}
+
+
 static uint8_t u8_subscribed=false;
 static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id=0;
-    char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64];
+    char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64],tb_topic_devID[64];
+    
     // your_context_t *context = event->context;
-    sprintf(tb_topic_price, "/station/price/fs_node_1201440612_%d",u8DeviceId);
-    sprintf(tb_topic_fw, "/station/fw_version/fs_node_1201440612_%d",u8DeviceId);
-    sprintf(tb_topic_endsession, "/station/End_Session/fs_node_1201440612_%d",u8DeviceId);
+    // sprintf(tb_topic_price, "/station/price/fs_node_1201440612_%d",u8DeviceId);
+    // sprintf(tb_topic_fw, "/station/fw_version/fs_node_1201440612_%d",u8DeviceId);
+    // sprintf(tb_topic_endsession, "/station/End_Session/fs_node_1201440612_%d",u8DeviceId);
+    sprintf(tb_topic_price, "/station/price/%s",deviceID);
+    sprintf(tb_topic_fw, "/station/fw_version/%s",deviceID);
+    sprintf(tb_topic_endsession, "/station/End_Session/%s",deviceID);
+    sprintf(tb_topic_devID, "/station/deviceID/%s",deviceID);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
@@ -94,6 +116,8 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_price, msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_fw, 0);
             ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_fw, msg_id);
+            msg_id = esp_mqtt_client_subscribe(client, tb_topic_devID, 0);
+            ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_devID, msg_id);
             // msg_id = esp_mqtt_client_subscribe(client, "v1/devices/me/attributes", 0);
             // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
@@ -119,7 +143,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGW(TAG,"DATA=%.*s\r\n", event->data_len, event->data);
             json_obj = cJSON_Parse(event->data);
             if(json_obj == NULL) {
-                ESP_LOGE(TAG, "Json can not parse\n");
+                ESP_LOGE(TAG, "Json can not parse");
                 break;
             }
             if(cJSON_GetObjectItem(json_obj, "price") != NULL) 
@@ -150,7 +174,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                 if(cJSON_GetObjectItem(json_obj, "fw_version") != NULL)
                 {
                     int getFwVer=atoi(cJSON_GetObjectItem(json_obj, "fw_version")->valuestring);
-                    ESP_LOGI(TAG, "FW version : %d\n",getFwVer);
+                    ESP_LOGI(TAG, "FW version : %d",getFwVer);
                     if(getFwVer>u8FwVerion)
                     {
                         u8FwVerion=getFwVer;
@@ -160,11 +184,15 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                         esp_restart();  
                     }
                 }  
+
+                if (cJSON_GetObjectItem(json_obj, "deviceID") != NULL) {
+                    setDeviceID(cJSON_GetObjectItem(json_obj, "deviceID")->valuestring);
+                }
                 // End Session msg. Create a thread to do endsession via virtual keyboard
                 if(cJSON_GetObjectItem(json_obj, "End_Session") != NULL)
                 {
                     int end_session=atoi(cJSON_GetObjectItem(json_obj, "End_Session")->valuestring);
-                    ESP_LOGI(TAG, "End_Session request received: %d\n",end_session);
+                    ESP_LOGI(TAG, "End_Session request received: %d",end_session);
 
                     //Execute commands to End current session
                     xTaskCreate(&end_session_by_vir_keypad, 
@@ -217,7 +245,7 @@ static void FD_mqtt_app_start(void)
     client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, FD_mqtt_event_handler, client);
     esp_mqtt_client_start(client);
-    ESP_LOGI(TAG, "Setup done \n");
+    ESP_LOGI(TAG, "Setup done ");
     vTaskDelay(pdMS_TO_TICKS(2000));
 }
 
@@ -264,19 +292,19 @@ void push_msg_to_broker(void) {
         {
             if(c_data[0]==0xF0)//process for end session pressed
             {
-                ESP_LOGI(TAG, "Sending end session signal to server\n");
-                sprintf(payload,"{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",u8DeviceId,"diesel",1);
-                ESP_LOGD(TAG, "Payload: %s\n", payload);
+                ESP_LOGI(TAG, "Sending end session signal to server");
+                sprintf(payload,"{\"DevID\": \"%s\", \"fuel_type\": \"%s\",\"Client_End_Session\":%d}",deviceID,"diesel",1);
+                ESP_LOGD(TAG, "Payload: %s", payload);
                 stat = push_special_action_msg(payload,strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
             } else {
-                ESP_LOGI(TAG, "\nData: %s\n", c_data);
+                ESP_LOGI(TAG, "Data: %s", c_data);
                 strncpy(liter, c_data, 10);
                 strncpy(money, c_data+10, 10);
                 strncpy(price, c_data+20, 6);
                                 
                 esp_wifi_sta_get_ap_info(&ap);
-                ESP_LOGD(TAG, "Free heap size: %ld bytes\n", esp_get_minimum_free_heap_size());
+                ESP_LOGD(TAG, "Free heap size: %ld bytes", esp_get_minimum_free_heap_size());
                 // printf("c_data[39] = %d\n",c_data[39]);
                 // if(c_data[39] == 5)
                 //     continue;
@@ -293,8 +321,8 @@ void push_msg_to_broker(void) {
                         atoi(price),  
                         ap.rssi);
 #else
-                sprintf(payload, "{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
-                        u8DeviceId, 
+                sprintf(payload, "{\"DevID\": \"%s\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 
+                        deviceID, 
                         "diesel", 
                         atoi(liter), 
                         atoi(money), 
@@ -304,7 +332,7 @@ void push_msg_to_broker(void) {
                 // For testing:
                 // idx++;
                 // sprintf(payload, "{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\", \"Liter\": %d, \"Money\": %d, \"Price\": %d, \"RSSI\": %d}", 1, "gasoline", idx, idx, idx, ap.rssi);
-                ESP_LOGD(TAG, "Payload: %s\n", payload);
+                ESP_LOGD(TAG, "Payload: %s", payload);
                 // stat = esp_mqtt_client_publish(client, "/station/data", payload, strlen(payload), 0, false);
                 stat = push_msg(payload, strlen(payload));
                 ESP_LOGI(TAG, "sent publish, stat=%d", stat);
@@ -328,13 +356,13 @@ void ping_tb(void) {
  
         // stat = esp_mqtt_client_publish(client, "/station/data", payload_ping, strlen(payload_ping), 0, false);
         esp_wifi_sta_get_ap_info(&ap);
-        sprintf(payload,"{\"DevID\": \"fs_node_1201440612_%d\", \"fuel_type\": \"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
-                            u8DeviceId,
+        sprintf(payload,"{\"DevID\": \"%s\", \"fuel_type\": \"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
+                            deviceID,
                             "diesel",
                             1,
                             ap.rssi);
         stat = push_heartbeat_msg(payload,strlen(payload));
-        ESP_LOGI(TAG, "Ping MSG successfully\n");
+        ESP_LOGI(TAG, "Ping MSG successfully");
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }

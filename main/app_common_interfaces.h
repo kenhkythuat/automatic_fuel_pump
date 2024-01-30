@@ -30,6 +30,7 @@ extern QueueHandle_t uplink_queue;
 extern uint8_t u8FwVerion;
 extern uint16_t u16CurPrice;
 extern uint8_t u8DeviceId;
+extern char* deviceID;
 
 // Wifi variables and function
 void wifi_main(void);

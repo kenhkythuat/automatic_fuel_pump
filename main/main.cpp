@@ -35,6 +35,7 @@ uint8_t operationMode ; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE
 uint8_t u8FwVerion = 0;
 uint16_t u16CurPrice = 0;
 uint8_t u8DeviceId = 0;
+char* deviceID = NULL;
 
 QueueHandle_t uplink_queue = NULL;
 
@@ -46,9 +47,9 @@ static void getOperationMode_version()
     u8DeviceId=0;
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
-    err=nvs_get_u8(nodeconfig_hdl,"deviceId",&u8DeviceId);
-    ESP_ERROR_CHECK(err);
-    ESP_LOGI(TAG, "DeviceId %d\n",u8DeviceId);
+    // err=nvs_get_u8(nodeconfig_hdl,"deviceId",&u8DeviceId);
+    // ESP_ERROR_CHECK(err);
+    // ESP_LOGI(TAG, "DeviceId %d\n",u8DeviceId);
     err=nvs_get_u8(nodeconfig_hdl,"OperationMode",&operationMode);
     ESP_ERROR_CHECK(err);
     ESP_LOGI(TAG,"OperationMode %d\n",operationMode);
@@ -58,6 +59,16 @@ static void getOperationMode_version()
     err=nvs_get_u8(nodeconfig_hdl,"fwVerion",&u8FwVerion);
     ESP_LOGI(TAG,"Fw version %d\n",u8FwVerion);
     ESP_ERROR_CHECK(err);
+
+    size_t str_len = 0;
+    err = nvs_get_str(nodeconfig_hdl, "deviceId", NULL, &str_len);
+    ESP_ERROR_CHECK(err);
+
+    deviceID = (char*) malloc(str_len);
+    err = nvs_get_str(nodeconfig_hdl, "deviceId", deviceID, &str_len);
+    ESP_ERROR_CHECK(err);
+    printf("%s\n", deviceID);
+    
     nvs_close(nodeconfig_hdl);
 }
 
