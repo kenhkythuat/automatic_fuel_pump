@@ -40,8 +40,9 @@ void rs232_config(void);
 
 // Keypad submodule interfaces
 void virtual_keypad_init();
-void change_price_by_vir_keypad(char *price);
-void end_session_by_vir_keypad();
+void change_price_by_vir_keypad(void *arg);
+void enter_qr_price_by_vir_keypad(void *arg);
+void end_session_by_vir_keypad(void *arg);
 
 // OTA function
 void ota_update(char *url);

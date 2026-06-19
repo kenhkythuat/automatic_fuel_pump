@@ -22,6 +22,10 @@
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "cJSON.h"
+#include <errno.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define TAG "MQTT"
 
@@ -50,6 +54,8 @@ static void setOperationMode_version(uint8_t OperationMode)
     ESP_ERROR_CHECK(err);
     err=nvs_set_u8(nodeconfig_hdl,"OperationMode",OperationMode);
     ESP_ERROR_CHECK(err);
+    err=nvs_commit(nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
 
@@ -61,6 +67,8 @@ static void setFW_version(uint8_t u8FwVerion)
     ESP_ERROR_CHECK(err);
     err=nvs_set_u8(nodeconfig_hdl,"fwVerion",u8FwVerion);
     ESP_ERROR_CHECK(err);
+    err=nvs_commit(nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
 
@@ -71,6 +79,8 @@ static void setNewPrice(uint16_t u16NewPrice)
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
     err=nvs_set_u16(nodeconfig_hdl,"price",u16NewPrice);
+    ESP_ERROR_CHECK(err);
+    err=nvs_commit(nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
@@ -86,17 +96,111 @@ static void setDeviceID(char* m_deviceID)
     ESP_ERROR_CHECK(err);
     err=nvs_set_str(nodeconfig_hdl,"deviceId",m_deviceID);
     ESP_ERROR_CHECK(err);
+    err=nvs_commit(nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
     esp_restart();
 }
 
 
 static uint8_t u8_subscribed=false;
+static bool parse_number_item(const cJSON *item, char *number_buf_out, size_t number_buf_size, uint32_t max_value, uint32_t *number_value)
+{
+    const char *number_str = NULL;
+    char number_buf[16];
+    char *end_ptr = NULL;
+    unsigned long value;
+
+    if (item == NULL || number_buf_out == NULL || number_buf_size == 0 || number_value == NULL) {
+        return false;
+    }
+
+    if (cJSON_IsString(item) && item->valuestring != NULL) {
+        number_str = item->valuestring;
+    } else if (cJSON_IsNumber(item)) {
+        snprintf(number_buf, sizeof(number_buf), "%d", item->valueint);
+        number_str = number_buf;
+    } else {
+        return false;
+    }
+
+    errno = 0;
+    value = strtoul(number_str, &end_ptr, 10);
+    if (errno != 0 || end_ptr == number_str || *end_ptr != '\0' || value > max_value) {
+        return false;
+    }
+
+    snprintf(number_buf_out, number_buf_size, "%lu", value);
+    *number_value = (uint32_t)value;
+    return true;
+}
+
+static bool parse_price_item(const cJSON *item, char *price_buf, size_t price_buf_size, uint16_t *price_value)
+{
+    uint32_t value = 0;
+
+    if (!parse_number_item(item, price_buf, price_buf_size, UINT16_MAX, &value)) {
+        return false;
+    }
+
+    *price_value = (uint16_t)value;
+    return true;
+}
+
+static bool parse_qr_amount_item(const cJSON *item, char *amount_buf, size_t amount_buf_size, uint32_t *raw_amount_value)
+{
+    char raw_amount_buf[16];
+    uint32_t raw_amount = 0;
+    uint32_t keypad_amount = 0;
+
+    if (!parse_number_item(item, raw_amount_buf, sizeof(raw_amount_buf), UINT32_MAX, &raw_amount)) {
+        return false;
+    }
+
+    keypad_amount = raw_amount / 100;
+    snprintf(amount_buf, amount_buf_size, "%lu", (unsigned long)keypad_amount);
+    if (raw_amount_value != NULL) {
+        *raw_amount_value = raw_amount;
+    }
+    return true;
+}
+
+static bool topic_matches(esp_mqtt_event_handle_t event, const char *topic)
+{
+    return event->topic_len == strlen(topic) && strncmp(event->topic, topic, event->topic_len) == 0;
+}
+
+static const cJSON *get_qr_price_item(const cJSON *json_obj)
+{
+    const cJSON *item = NULL;
+
+    if (cJSON_IsNumber(json_obj) || cJSON_IsString(json_obj)) {
+        return json_obj;
+    }
+
+    item = cJSON_GetObjectItem(json_obj, "qr_price");
+    if (item != NULL) {
+        return item;
+    }
+
+    item = cJSON_GetObjectItem(json_obj, "amount");
+    if (item != NULL) {
+        return item;
+    }
+
+    item = cJSON_GetObjectItem(json_obj, "money");
+    if (item != NULL) {
+        return item;
+    }
+
+    return cJSON_GetObjectItem(json_obj, "price");
+}
+
 static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
     int msg_id=0;
-    char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64],tb_topic_devID[64];
+    char tb_topic_price[64],tb_topic_fw[64],tb_topic_endsession[64],tb_topic_devID[64],tb_topic_qr_price[80];
     
     // your_context_t *context = event->context;
     // sprintf(tb_topic_price, "/station/price/fs_node_1201440612_%d",u8DeviceId);
@@ -106,6 +210,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     sprintf(tb_topic_fw, "/station/fw_version/%s",deviceID);
     sprintf(tb_topic_endsession, "/station/End_Session/%s",deviceID);
     sprintf(tb_topic_devID, "/station/deviceID/%s",deviceID);
+    sprintf(tb_topic_qr_price, "/station/qr_price/%s",deviceID);
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
@@ -118,6 +223,8 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_fw, msg_id);
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_devID, 0);
             ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_devID, msg_id);
+            msg_id = esp_mqtt_client_subscribe(client, tb_topic_qr_price, 0);
+            ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_qr_price, msg_id);
             // msg_id = esp_mqtt_client_subscribe(client, "v1/devices/me/attributes", 0);
             // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
@@ -141,30 +248,98 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
             ESP_LOGW(TAG,"TOPIC=%.*s\r\n", event->topic_len, event->topic);
             ESP_LOGW(TAG,"DATA=%.*s\r\n", event->data_len, event->data);
-            json_obj = cJSON_Parse(event->data);
+            json_obj = cJSON_ParseWithLength(event->data, event->data_len);
             if(json_obj == NULL) {
                 ESP_LOGE(TAG, "Json can not parse");
                 break;
             }
-            if(cJSON_GetObjectItem(json_obj, "price") != NULL) 
+            bool is_qr_price_topic = topic_matches(event, tb_topic_qr_price);
+            if(!is_qr_price_topic && cJSON_GetObjectItem(json_obj, "price") != NULL) 
             {
-                if(atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring) !=u16CurPrice)
-                {                    
-                //update current price to new price and store in NVS
-                u16CurPrice=atoi(cJSON_GetObjectItem(json_obj, "price")->valuestring);
-                setNewPrice(u16CurPrice);
+                char price_buf[16];
+                uint16_t new_price = 0;
+                char *task_price = NULL;
 
-                //Send new price to device via simulated keypad
-                xTaskCreate(&change_price_by_vir_keypad, 
-                            "change_price_by_vir_keypad", 
-                            2048, 
-                            cJSON_GetObjectItem(json_obj, "price")->valuestring, 
-                            configMAX_PRIORITIES-1, 
-                            NULL);
-                // &my_task_handler);
-                //change_price_by_vir_keypad(cJSON_GetObjectItem(json_obj, "price")->valuestring);
+                if (!parse_price_item(cJSON_GetObjectItem(json_obj, "price"), price_buf, sizeof(price_buf), &new_price)) {
+                    ESP_LOGE(TAG, "Invalid price value");
+                    cJSON_Delete(json_obj);
+                    break;
+                }
+
+                ESP_LOGI(TAG, "Price request received: old=%u new=%u", u16CurPrice, new_price);
+                if(new_price != u16CurPrice)
+                {                    
+                    task_price = (char *)malloc(strlen(price_buf) + 1);
+                    if (task_price == NULL) {
+                        ESP_LOGE(TAG, "Failed to allocate price task parameter");
+                        cJSON_Delete(json_obj);
+                        break;
+                    }
+                    strcpy(task_price, price_buf);
+
+                    // Send new price to device via simulated keypad
+                    BaseType_t task_created = xTaskCreate(&change_price_by_vir_keypad,
+                                                          "change_price_by_vir_keypad",
+                                                          3072,
+                                                          task_price,
+                                                          configMAX_PRIORITIES-1,
+                                                          NULL);
+                    if (task_created != pdPASS) {
+                        ESP_LOGE(TAG, "Failed to create change price task");
+                        free(task_price);
+                        cJSON_Delete(json_obj);
+                        break;
+                    }
+
+                    // Update current price in RAM/NVS after the keypad task was accepted.
+                    u16CurPrice = new_price;
+                    setNewPrice(u16CurPrice);
+                    ESP_LOGI(TAG, "Change price task created for price %s", price_buf);
+                }
+                else {
+                    ESP_LOGI(TAG, "Price is unchanged, keypad sequence skipped");
                 }
                 u8_subscribed=true;
+            }
+
+            if(is_qr_price_topic)
+            {
+                char amount_buf[16];
+                uint32_t qr_amount = 0;
+                char *task_amount = NULL;
+                const cJSON *qr_price_item = get_qr_price_item(json_obj);
+
+                if (!parse_qr_amount_item(qr_price_item, amount_buf, sizeof(amount_buf), &qr_amount)) {
+                    ESP_LOGE(TAG, "Invalid QR price value");
+                    cJSON_Delete(json_obj);
+                    break;
+                }
+
+                ESP_LOGI(TAG, "QR price command received, raw=%lu, keypad=%s, execute keypad without RS232 validation",
+                         (unsigned long)qr_amount,
+                         amount_buf);
+                task_amount = (char *)malloc(strlen(amount_buf) + 1);
+                if (task_amount == NULL) {
+                    ESP_LOGE(TAG, "Failed to allocate QR price task parameter");
+                    cJSON_Delete(json_obj);
+                    break;
+                }
+                strcpy(task_amount, amount_buf);
+
+                BaseType_t task_created = xTaskCreate(&enter_qr_price_by_vir_keypad,
+                                                      "enter_qr_price",
+                                                      3072,
+                                                      task_amount,
+                                                      configMAX_PRIORITIES-1,
+                                                      NULL);
+                if (task_created != pdPASS) {
+                    ESP_LOGE(TAG, "Failed to create QR price task");
+                    free(task_amount);
+                    cJSON_Delete(json_obj);
+                    break;
+                }
+
+                ESP_LOGI(TAG, "QR price task created for amount %s", amount_buf);
             }
 
             // TODO: should be removed. check the current situation.
@@ -204,6 +379,8 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
                 }  
             // } 
+            cJSON_Delete(json_obj);
+            json_obj = NULL;
             break;
         case MQTT_EVENT_ERROR:
             ESP_LOGI(TAG, "MQTT_EVENT_ERROR");

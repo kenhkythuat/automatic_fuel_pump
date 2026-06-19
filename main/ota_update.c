@@ -65,6 +65,8 @@ static void setOperationMode_version(uint8_t OperationMode)
     ESP_ERROR_CHECK(err);
     err=nvs_set_u8(nodeconfig_hdl,"OperationMode",OperationMode);
     ESP_ERROR_CHECK(err);
+    err=nvs_commit(nodeconfig_hdl);
+    ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
 }
 

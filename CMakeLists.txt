@@ -24,3 +24,4 @@ add_definitions(
 project(atc_wifi_fw)
 set(CMAKE_CONFIGURATION_TYPES LORA_ENABLE)
 target_add_binary_data(${CMAKE_PROJECT_NAME}.elf "main/ca_s3_cert.pem" TEXT)
+nvs_create_partition_image(nvs "nvs.csv" FLASH_IN_PROJECT)

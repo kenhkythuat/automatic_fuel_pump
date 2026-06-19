@@ -30,6 +30,10 @@ extern "C" {
 
 // OTA server URL
 #define FW_URL "http://172.24.1.1:8181/atc_wifi_fw.bin"
+#define DEFAULT_DEVICE_ID "node_000999"
+#define DEFAULT_FW_VERSION 10
+#define DEFAULT_PRICE 10000
+
 uint8_t operationMode ; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE and OTA_MODE
 
 uint8_t u8FwVerion = 0;
@@ -39,6 +43,26 @@ char* deviceID = NULL;
 
 QueueHandle_t uplink_queue = NULL;
 
+static void nvs_set_default_u8(nvs_handle handle, const char *key, uint8_t value)
+{
+    ESP_ERROR_CHECK(nvs_set_u8(handle, key, value));
+}
+
+static void nvs_set_default_u16(nvs_handle handle, const char *key, uint16_t value)
+{
+    ESP_ERROR_CHECK(nvs_set_u16(handle, key, value));
+}
+
+static void nvs_set_default_str(nvs_handle handle, const char *key, const char *value)
+{
+    ESP_ERROR_CHECK(nvs_set_str(handle, key, value));
+}
+
+static bool nvs_needs_default(esp_err_t err)
+{
+    return err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_NVS_TYPE_MISMATCH;
+}
+
 // get NVS values
 static void getOperationMode_version()
 {
@@ -47,26 +71,51 @@ static void getOperationMode_version()
     u8DeviceId=0;
     err=nvs_open("nodeconfig",NVS_READWRITE,&nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
-    // err=nvs_get_u8(nodeconfig_hdl,"deviceId",&u8DeviceId);
-    // ESP_ERROR_CHECK(err);
-    // ESP_LOGI(TAG, "DeviceId %d\n",u8DeviceId);
+
     err=nvs_get_u8(nodeconfig_hdl,"OperationMode",&operationMode);
-    ESP_ERROR_CHECK(err);
+    if (nvs_needs_default(err)) {
+        operationMode = FUEL_DISPENSER_MODE;
+        nvs_set_default_u8(nodeconfig_hdl, "OperationMode", operationMode);
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
     ESP_LOGI(TAG,"OperationMode %d\n",operationMode);
+
     err=nvs_get_u16(nodeconfig_hdl,"price",&u16CurPrice);
-    ESP_ERROR_CHECK(err);
+    if (nvs_needs_default(err)) {
+        u16CurPrice = DEFAULT_PRICE;
+        nvs_set_default_u16(nodeconfig_hdl, "price", u16CurPrice);
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
     ESP_LOGI(TAG,"Current price %d\n",u16CurPrice);
+
     err=nvs_get_u8(nodeconfig_hdl,"fwVerion",&u8FwVerion);
+    if (nvs_needs_default(err)) {
+        u8FwVerion = DEFAULT_FW_VERSION;
+        nvs_set_default_u8(nodeconfig_hdl, "fwVerion", u8FwVerion);
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
     ESP_LOGI(TAG,"Fw version %d\n",u8FwVerion);
-    ESP_ERROR_CHECK(err);
 
     size_t str_len = 0;
     err = nvs_get_str(nodeconfig_hdl, "deviceId", NULL, &str_len);
-    ESP_ERROR_CHECK(err);
+    if (nvs_needs_default(err)) {
+        nvs_set_default_str(nodeconfig_hdl, "deviceId", DEFAULT_DEVICE_ID);
+        str_len = sizeof(DEFAULT_DEVICE_ID);
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
 
     deviceID = (char*) malloc(str_len);
+    if (deviceID == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate deviceID");
+        abort();
+    }
     err = nvs_get_str(nodeconfig_hdl, "deviceId", deviceID, &str_len);
     ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(nvs_commit(nodeconfig_hdl));
     printf("%s\n", deviceID);
     
     nvs_close(nodeconfig_hdl);

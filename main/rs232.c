@@ -46,6 +46,8 @@ static volatile int disable_intr_times_3 = 0,disable_intr_times_4 = 0;
 static volatile int col_8_detected=0,row_8_detected=0;
 static volatile int col_E_detected=0,row_E_detected=0;
 
+#define BTN_DEBUG_POLL_MS 20
+
 // Util functions
 void DecToHexStr(int dec, char *str) { 
     sprintf(str, "%2x", dec); 
@@ -157,6 +159,17 @@ static void read_rs232_task(void *arg)
                         case IDLE:
                             user_pressed_E = false;
                             copy_21_bytes(fd_op.normal_data, fd_op.data);
+                            if ((fd_op.data[19] & 0x0F) == 0x05) {
+                                ESP_LOGI("STATE_MACHINE",
+                                         "IDLE key candidate: data[0..4]=%02x %02x %02x %02x %02x, data[19]=0x%02x, T_match=%d",
+                                         (uint8_t)fd_op.data[0],
+                                         (uint8_t)fd_op.data[1],
+                                         (uint8_t)fd_op.data[2],
+                                         (uint8_t)fd_op.data[3],
+                                         (uint8_t)fd_op.data[4],
+                                         (uint8_t)fd_op.data[19],
+                                         compare_5_bytes(fd_op.data, T));
+                            }
                             // lift noozle, start pumping
                             if( (fd_op.data[19] & 0x0F) == 0x00 ) { // lift noozle, start pumping
                                 ESP_LOGD("STATE_MACHINE", "user lift nozzle  >>>>> switch to FUEL_PUMPING mode");
@@ -164,7 +177,7 @@ static void read_rs232_task(void *arg)
                             }
                             // Press T
                             if(compare_5_bytes(fd_op.data, T) && (fd_op.data[19] & 0x0F) == 0x05) {
-                                ESP_LOGD("STATE_MACHINE", "user press T  >>>>> switch to USER_PRESS_T mode");
+                                ESP_LOGI("STATE_MACHINE", "user press T >>>>> switch to USER_PRESS_T mode");
                                 fd_op.state = USER_PRESS_T;
                             }
                             // Press P
@@ -250,7 +263,7 @@ static void read_rs232_task(void *arg)
                             break;
                         case USER_PRESS_T:
                             if((fd_op.data[19] & 0x0F) == 0x04) {
-                                ESP_LOGD("STATE_MACHINE", "user press C  >>>>> switch to IDLE mode");
+                                ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: user press C >>>>> switch to IDLE mode");
                                 fd_op.state = IDLE;
                                 break;
                             }
@@ -263,15 +276,19 @@ static void read_rs232_task(void *arg)
                             {
                                 if(compare_5_bytes(fd_op.data, FILLING_PW) /*and button 8 is press*/) 
                                 {                                
-                                    ESP_LOGD("STATE_MACHINE", "user press 8 >>>>> switch to USER_PRESS_T8 mode");
+                                    ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: row/col 8 detected, user press 8 >>>>> switch to USER_PRESS_T8 mode");
                                     fd_op.state = USER_PRESS_T8;
                                     row_8_detected=col_8_detected=0; //clear int pins
                                     gpio_intr_disable(COL_8_INT_PIN);
                                     gpio_intr_disable(ROW_8_INT_PIN);
                                 }
+                                else {
+                                    ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: row/col 8 detected but RS232 data does not match FILLING_PW, data[19]=0x%02x", fd_op.data[19]);
+                                }
                             }
                             else if(row_8_detected || col_8_detected)
                             {
+                                ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: partial 8 detect row=%d col=%d, clear and wait again", row_8_detected, col_8_detected);
                                 row_8_detected=col_8_detected=0;
                                 gpio_intr_enable(COL_8_INT_PIN);
                                 gpio_intr_enable(ROW_8_INT_PIN);
@@ -378,7 +395,7 @@ void IRAM_ATTR row_btn_8_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_1++;
     row_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_8_detected rising %d, disable_intr_times_1 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
+    esp_rom_printf("GPIO[%d] intr, row_8_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
     gpio_intr_disable(gpio_num);
 }
 
@@ -387,7 +404,7 @@ void IRAM_ATTR col_btn_8_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_2++;
     col_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_8_detected falling %d, disable_intr_times_2 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
+    esp_rom_printf("GPIO[%d] intr, col_8_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
     gpio_intr_disable(gpio_num);
 }
 
@@ -396,7 +413,7 @@ void IRAM_ATTR row_btn_E_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_3++;
     row_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_E_detected rising %d, disable_intr_times_3 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
+    esp_rom_printf("GPIO[%d] intr, row_E_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
     gpio_intr_disable(gpio_num);
 }
 
@@ -405,8 +422,49 @@ void IRAM_ATTR col_btn_E_gpio_isr_handler(void* arg)
     uint32_t gpio_num = (uint32_t) arg;
     disable_intr_times_4++;
     col_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_E_detected falling %d, disable_intr_times_4 = %d", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
+    esp_rom_printf("GPIO[%d] intr, col_E_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
     gpio_intr_disable(gpio_num);
+}
+
+static void button_input_debug_task(void *arg)
+{
+    (void)arg;
+    int prev_col_8 = gpio_get_level(COL_8_INT_PIN);
+    int prev_row_8 = gpio_get_level(ROW_8_INT_PIN);
+    int prev_col_E = gpio_get_level(COL_E_INT_PIN);
+    int prev_row_E = gpio_get_level(ROW_E_INT_PIN);
+
+    ESP_LOGI(TAG, "BTN input debug started: COL_8 GPIO%d=%d, ROW_8 GPIO%d=%d, COL_E GPIO%d=%d, ROW_E GPIO%d=%d",
+             COL_8_INT_PIN, prev_col_8,
+             ROW_8_INT_PIN, prev_row_8,
+             COL_E_INT_PIN, prev_col_E,
+             ROW_E_INT_PIN, prev_row_E);
+
+    for (;;) {
+        int col_8 = gpio_get_level(COL_8_INT_PIN);
+        int row_8 = gpio_get_level(ROW_8_INT_PIN);
+        int col_E = gpio_get_level(COL_E_INT_PIN);
+        int row_E = gpio_get_level(ROW_E_INT_PIN);
+
+        if (col_8 != prev_col_8) {
+            ESP_LOGI(TAG, "BTN input edge: COL_8 GPIO%d %d -> %d", COL_8_INT_PIN, prev_col_8, col_8);
+            prev_col_8 = col_8;
+        }
+        if (row_8 != prev_row_8) {
+            ESP_LOGI(TAG, "BTN input edge: ROW_8 GPIO%d %d -> %d", ROW_8_INT_PIN, prev_row_8, row_8);
+            prev_row_8 = row_8;
+        }
+        if (col_E != prev_col_E) {
+            ESP_LOGI(TAG, "BTN input edge: COL_E GPIO%d %d -> %d", COL_E_INT_PIN, prev_col_E, col_E);
+            prev_col_E = col_E;
+        }
+        if (row_E != prev_row_E) {
+            ESP_LOGI(TAG, "BTN input edge: ROW_E GPIO%d %d -> %d", ROW_E_INT_PIN, prev_row_E, row_E);
+            prev_row_E = row_E;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(BTN_DEBUG_POLL_MS));
+    }
 }
 
 
@@ -510,5 +568,6 @@ void rs232_config(void)
     config_btn_E_interrupt();
    // pinMode()
     ESP_LOGI(TAG,"Create RS232 task \n");
-    xTaskCreate(&read_rs232_task, "read_rs232_task", FD_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES, NULL);
+    xTaskCreate(&read_rs232_task, "read_rs232_task", FD_TASK_STACK_SIZE, NULL, 10, NULL);
+    xTaskCreate(&button_input_debug_task, "btn_input_debug", 2048, NULL, 5, NULL);
 }
