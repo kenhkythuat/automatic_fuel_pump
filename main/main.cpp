@@ -148,7 +148,7 @@ extern "C" void app_main(void)
     {        
         ESP_LOGI(TAG, "Device is running Fuel Dispenser mode");
         // Create a queue for threads communication
-        uplink_queue = xQueueCreate( 10, sizeof(uint16_t) );
+        uplink_queue = xQueueCreate(10, sizeof(char *));
         if (uplink_queue == NULL) abort();
         virtual_keypad_init();
         wifi_sta_main();//connecting to wifi AP

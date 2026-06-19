@@ -42,6 +42,7 @@ void rs232_config(void);
 void virtual_keypad_init();
 void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
+void cancel_qr_money_by_vir_keypad(void *arg);
 void end_session_by_vir_keypad(void *arg);
 
 // OTA function

@@ -29,16 +29,28 @@
 
 #define TAG "MQTT"
 
+#define TBMQ_BROKER_URI "mqtt://161.248.146.170:1883"
+#define TBMQ_PASSWORD "123456789"
+#define TBMQ_CLIENT_ID "node_qr_001"
+#define TBMQ_COMMAND_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/command"
+#define TBMQ_TELEMETRY_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/telemetry"
+#define TBMQ_ACK_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/ack"
+#define TBMQ_KEEPALIVE_SEC 60
+
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 //extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 const int MQTT_CONNECTED_EVENT = BIT0;
 static EventGroupHandle_t mqtt_conn_event_group;
 static SemaphoreHandle_t push_msg_sem;
-esp_mqtt_client_handle_t client;
+static esp_mqtt_client_handle_t client;
+static bool mqtt_connected;
+static char mqtt_client_id[96];
 cJSON *json_obj;
 char payload[256];
 //int currentPrice=0;
+
+static int publish_to_tbmq(const char *topic, const char *msg_payload, uint16_t msg_len);
 
 static void log_error_if_nonzero(const char * message, int error_code)
 {
@@ -196,6 +208,123 @@ static const cJSON *get_qr_price_item(const cJSON *json_obj)
     return cJSON_GetObjectItem(json_obj, "price");
 }
 
+static void publish_payment_ack(const char *cmd, const char *result, const char *description)
+{
+    char ack_payload[256];
+
+    if (description != NULL) {
+        snprintf(ack_payload,
+                 sizeof(ack_payload),
+                 "{\"cmd\":\"%s\",\"result\":\"%s\",\"description\":\"%s\"}",
+                 cmd,
+                 result,
+                 description);
+    } else {
+        snprintf(ack_payload,
+                 sizeof(ack_payload),
+                 "{\"cmd\":\"%s\",\"result\":\"%s\"}",
+                 cmd,
+                 result);
+    }
+
+    publish_to_tbmq(TBMQ_ACK_TOPIC, ack_payload, strlen(ack_payload));
+}
+
+static void handle_payment_command(const cJSON *root)
+{
+    const cJSON *cmd_item = cJSON_GetObjectItemCaseSensitive(root, "cmd");
+    const cJSON *param = cJSON_GetObjectItemCaseSensitive(root, "param");
+
+    if (!cJSON_IsString(cmd_item) || cmd_item->valuestring == NULL) {
+        ESP_LOGE(TAG, "Payment command is missing string field 'cmd'");
+        publish_payment_ack("unknown", "error", "missing cmd");
+        return;
+    }
+
+    const char *cmd = cmd_item->valuestring;
+    if (!cJSON_IsObject(param)) {
+        ESP_LOGE(TAG, "%s is missing object field 'param'", cmd);
+        publish_payment_ack(cmd, "error", "missing param");
+        return;
+    }
+
+    if (strcmp(cmd, "set_qr_money") == 0) {
+        const cJSON *qr_money_item = cJSON_GetObjectItemCaseSensitive(param, "qr_money");
+        char amount_buf[16];
+        uint32_t qr_money = 0;
+
+        if (!parse_qr_amount_item(qr_money_item, amount_buf, sizeof(amount_buf), &qr_money)) {
+            ESP_LOGE(TAG, "Invalid param.qr_money");
+            publish_payment_ack(cmd, "error", "invalid qr_money");
+            return;
+        }
+
+        char *task_amount = strdup(amount_buf);
+        if (task_amount == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate QR money task parameter");
+            publish_payment_ack(cmd, "error", "out of memory");
+            return;
+        }
+
+        BaseType_t task_created = xTaskCreate(enter_qr_price_by_vir_keypad,
+                                              "enter_qr_money",
+                                              3072,
+                                              task_amount,
+                                              configMAX_PRIORITIES - 1,
+                                              NULL);
+        if (task_created != pdPASS) {
+            free(task_amount);
+            ESP_LOGE(TAG, "Failed to create QR money keypad task");
+            publish_payment_ack(cmd, "error", "task create failed");
+            return;
+        }
+
+        ESP_LOGI(TAG,
+                 "Payment command accepted: cmd=%s qr_money=%lu keypad=%s",
+                 cmd,
+                 (unsigned long)qr_money,
+                 amount_buf);
+        publish_payment_ack(cmd, "ok", NULL);
+        return;
+    }
+
+    if (strcmp(cmd, "cancel_qr_money") == 0) {
+        const cJSON *cancel_item = cJSON_GetObjectItemCaseSensitive(param, "cancel_qr_money");
+        char cancel_buf[4];
+        uint32_t cancel_value = 0;
+
+        if (!parse_number_item(cancel_item,
+                               cancel_buf,
+                               sizeof(cancel_buf),
+                               1,
+                               &cancel_value) ||
+            cancel_value != 1) {
+            ESP_LOGE(TAG, "Invalid param.cancel_qr_money, expected 1");
+            publish_payment_ack(cmd, "error", "invalid cancel_qr_money");
+            return;
+        }
+
+        BaseType_t task_created = xTaskCreate(cancel_qr_money_by_vir_keypad,
+                                              "cancel_qr_money",
+                                              2048,
+                                              NULL,
+                                              configMAX_PRIORITIES - 1,
+                                              NULL);
+        if (task_created != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create cancel QR money keypad task");
+            publish_payment_ack(cmd, "error", "task create failed");
+            return;
+        }
+
+        ESP_LOGI(TAG, "Payment command accepted: cmd=%s", cmd);
+        publish_payment_ack(cmd, "ok", NULL);
+        return;
+    }
+
+    ESP_LOGW(TAG, "Unsupported payment command: %s", cmd);
+    publish_payment_ack(cmd, "error", "unsupported command");
+}
+
 static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 {
     esp_mqtt_client_handle_t client = event->client;
@@ -214,6 +343,11 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+            mqtt_connected = true;
+            xEventGroupSetBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
+            msg_id = esp_mqtt_client_subscribe(client, TBMQ_COMMAND_TOPIC, 1);
+            ESP_LOGI(TAG, "subscribe to topic: %s QoS=1, msg_id=%d", TBMQ_COMMAND_TOPIC, msg_id);
+
             // subcribe to data topic QoS0
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_endsession, 0);
             ESP_LOGI(TAG, "subscribe to topic: %s  successful, msg_id=%d", tb_topic_endsession, msg_id);
@@ -230,13 +364,13 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
 
             break;
         case MQTT_EVENT_DISCONNECTED:
-            ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+            mqtt_connected = false;
+            xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
+            ESP_LOGW(TAG, "MQTT_EVENT_DISCONNECTED");
             break;
 
         case MQTT_EVENT_SUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
-            msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
-            ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
             break;
         case MQTT_EVENT_UNSUBSCRIBED:
             ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -253,6 +387,14 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                 ESP_LOGE(TAG, "Json can not parse");
                 break;
             }
+
+            if (topic_matches(event, TBMQ_COMMAND_TOPIC)) {
+                handle_payment_command(json_obj);
+                cJSON_Delete(json_obj);
+                json_obj = NULL;
+                break;
+            }
+
             bool is_qr_price_topic = topic_matches(event, tb_topic_qr_price);
             if(!is_qr_price_topic && cJSON_GetObjectItem(json_obj, "price") != NULL) 
             {
@@ -383,7 +525,9 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             json_obj = NULL;
             break;
         case MQTT_EVENT_ERROR:
-            ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+            mqtt_connected = false;
+            xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
+            ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
             if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
                 log_error_if_nonzero("reported from esp-tls", event->error_handle->esp_tls_last_esp_err);
                 log_error_if_nonzero("reported from tls stack", event->error_handle->esp_tls_stack_err);
@@ -403,33 +547,61 @@ static void FD_mqtt_event_handler(void *handler_args, esp_event_base_t base, int
     ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%ld", base, event_id);
     FD_mqtt_event_handler_cb(event_data);
 }
-#define ORP 1
 static void FD_mqtt_app_start(void)
-{   
+{
+    int client_id_len = snprintf(mqtt_client_id, sizeof(mqtt_client_id), "%s", TBMQ_CLIENT_ID);
+    if (client_id_len < 0 || client_id_len >= (int)sizeof(mqtt_client_id)) {
+        ESP_LOGE(TAG, "MQTT client ID is invalid or too long");
+        return;
+    }
+
     esp_mqtt_client_config_t mqtt_cfg = {
-// espidf 5.1.2 changes
-        // #ifdef ORP
-        // .uri = "mqtt://172.24.1.1/", //@ORP
-        // #else
-        // .uri = "mqtt://192.168.5.1/", //RPI4
-        // #endif
-        // .port = 1883,
-        // .username = "aVq7QQIRXQ82gCQiXfjX"
-        .broker.address.uri = "mqtt://172.24.1.1:1883",
+        .broker.address.uri = TBMQ_BROKER_URI,
+        .credentials.client_id = mqtt_client_id,
+        .credentials.authentication.password = TBMQ_PASSWORD,
+        .session.disable_clean_session = true,
+        .session.keepalive = TBMQ_KEEPALIVE_SEC,
+        .session.protocol_ver = MQTT_PROTOCOL_V_5,
+        .network.disable_auto_reconnect = false,
     };
 
-
     client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, FD_mqtt_event_handler, client);
-    esp_mqtt_client_start(client);
-    ESP_LOGI(TAG, "Setup done ");
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize MQTT client");
+        return;
+    }
+
+    ESP_ERROR_CHECK(esp_mqtt_client_register_event(
+        client,
+        ESP_EVENT_ANY_ID,
+        FD_mqtt_event_handler,
+        NULL));
+    ESP_ERROR_CHECK(esp_mqtt_client_start(client));
+    ESP_LOGI(TAG,
+             "MQTT start requested | broker=%s client_id=%s",
+             TBMQ_BROKER_URI,
+             mqtt_client_id);
+}
+
+static int publish_to_tbmq(const char *topic, const char *msg_payload, uint16_t msg_len)
+{
+    if (client == NULL || topic == NULL || msg_payload == NULL) {
+        ESP_LOGE(TAG, "Invalid MQTT publish arguments");
+        return -1;
+    }
+
+    if (!mqtt_connected) {
+        ESP_LOGW(TAG, "MQTT not connected, skip topic=%s", topic);
+        return -1;
+    }
+
+    return esp_mqtt_client_publish(client, topic, msg_payload, msg_len, 0, false);
 }
 
 static int push_msg(char *msg_payload, uint16_t msg_len) {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = esp_mqtt_client_publish(client, "/station/data", msg_payload, msg_len, 0, false);
+    stat = publish_to_tbmq(TBMQ_TELEMETRY_TOPIC, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -437,7 +609,7 @@ static int push_msg(char *msg_payload, uint16_t msg_len) {
 static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = esp_mqtt_client_publish(client, "/station/special_action", msg_payload, msg_len, 0, false);
+    stat = publish_to_tbmq(TBMQ_ACK_TOPIC, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -448,19 +620,15 @@ static int push_heartbeat_msg(char *msg_payload, uint16_t msg_len)
 {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat=esp_mqtt_client_publish(client, "/station/ping", msg_payload, msg_len, 0, false);
+    stat = publish_to_tbmq(TBMQ_TELEMETRY_TOPIC, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
 //int currentPrice=0;    
-void push_msg_to_broker(void) {
+static void push_msg_to_broker(void *arg) {
     wifi_ap_record_t ap;
     int stat;
-    int idx=0;
-    int prev_stat = 0;
-    uint32_t lit=0;
-    
-    char *c_data = (char *)malloc(42);
+    char *c_data = NULL;
     char *liter = (char *)malloc(11); memset(liter, 0, 11); // liter[11] = '/0';
     char *money = (char *)malloc(11); memset(money, 0, 11); // money[11] = '/0';
     char *price = (char *)malloc(7);  memset(price, 0, 7);  // price[7] = '/0';
@@ -523,7 +691,7 @@ void push_msg_to_broker(void) {
     }
 }
 
-void ping_tb(void) {
+static void ping_tb(void *arg) {
     int stat;
     wifi_ap_record_t ap;
     //wifi_ap_record_t ap;
@@ -539,7 +707,11 @@ void ping_tb(void) {
                             1,
                             ap.rssi);
         stat = push_heartbeat_msg(payload,strlen(payload));
-        ESP_LOGI(TAG, "Ping MSG successfully");
+        if (stat >= 0) {
+            ESP_LOGI(TAG, "Ping MSG published, msg_id=%d", stat);
+        } else {
+            ESP_LOGW(TAG, "Ping MSG skipped or failed");
+        }
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
@@ -547,15 +719,29 @@ void FD_wifi_mqtt_config(void)
 {
 
     mqtt_conn_event_group = xEventGroupCreate();
+    if (mqtt_conn_event_group == NULL) {
+        ESP_LOGE(TAG, "Failed to create MQTT event group");
+        return;
+    }
+
+    push_msg_sem = xSemaphoreCreateMutex();
+    if (push_msg_sem == NULL) {
+        ESP_LOGE(TAG, "Failed to create MQTT publish mutex");
+        return;
+    }
+
     json_obj = cJSON_CreateObject();
     //const esp_partition_t *running_partition = esp_ota_get_running_partition();
     //initialise_wifi(running_partition->label);
 
     FD_mqtt_app_start();
+    if (client == NULL) {
+        ESP_LOGE(TAG, "MQTT setup failed");
+        return;
+    }
+
     rs232_config();
     ESP_LOGI(TAG, "RS232 config done\n");
-    push_msg_sem = xSemaphoreCreateBinary();
-    xSemaphoreGive(push_msg_sem);
-    xTaskCreate(&push_msg_to_broker, "push_msg_to_broker", 2048, NULL, configMAX_PRIORITIES-1, NULL);
-    xTaskCreate(&ping_tb, "ping_tb", 2048, NULL, configMAX_PRIORITIES-1, NULL);
+    xTaskCreate(push_msg_to_broker, "push_msg_to_broker", 2048, NULL, configMAX_PRIORITIES-1, NULL);
+    xTaskCreate(ping_tb, "ping_tb", 2048, NULL, configMAX_PRIORITIES-1, NULL);
 }

@@ -145,6 +145,19 @@ void enter_qr_price_by_vir_keypad(void *arg) {
     vTaskDelete(NULL);
 }
 
+void cancel_qr_money_by_vir_keypad(void *arg) {
+    (void)arg;
+
+    xSemaphoreTake(set_price_task_sem, portMAX_DELAY);
+    ESP_LOGI(TAG, "Cancel QR money start: press C");
+
+    press_key('C');
+
+    ESP_LOGI(TAG, "Cancel QR money completed.\n\n");
+    xSemaphoreGive(set_price_task_sem);
+    vTaskDelete(NULL);
+}
+
 void end_session_by_vir_keypad(void *arg) {
     (void)arg;
     
