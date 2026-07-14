@@ -79,8 +79,8 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 //     return ESP_OK;
 // }
 
-#define EXAMPLE_ESP_WIFI_SSID      "wifi thuanphat"
-#define EXAMPLE_ESP_WIFI_PASS      "thuanphat777"
+#define EXAMPLE_ESP_WIFI_SSID      "Technical IOT"
+#define EXAMPLE_ESP_WIFI_PASS      "123456789"
 #define EXAMPLE_ESP_MAXIMUM_RETRY  5
 #define WIFI_AP_TIMEOUT  120000/portTICK_PERIOD_MS //ms
 extern void wifi_sta_main(void)
