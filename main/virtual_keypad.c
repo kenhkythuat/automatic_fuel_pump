@@ -5,13 +5,14 @@
 #define TAG "VIR_KEYPAD"
 
 #define PIN_CHANEL_SELECT_1A 14
-#define PIN_CHANEL_SELECT_1B 12
-#define PIN_CHANEL_SELECT_1C 13
-#define PIN_INH_CLUSTER_1 32
-#define PIN_CHANEL_SELECT_2A 19
-#define PIN_CHANEL_SELECT_2B 18
-#define PIN_CHANEL_SELECT_2C 5
-#define PIN_INH_CLUSTER_2 23
+#define PIN_CHANEL_SELECT_1B 13
+#define PIN_CHANEL_SELECT_1C 12
+#define PIN_INH_CLUSTER_1 8
+#define PIN_CHANEL_SELECT_2A 16
+#define PIN_CHANEL_SELECT_2B 17
+#define PIN_CHANEL_SELECT_2C 18
+#define PIN_INH_CLUSTER_2 19
+#define ON_OFF_VIRTUAL_KEYPAD GPIO_NUM_5
 
 static SemaphoreHandle_t set_price_task_sem;
 #define ORDER_CMD_SIZE 8
@@ -20,7 +21,7 @@ static SemaphoreHandle_t set_price_task_sem;
 
 char order[ORDER_CMD_SIZE] = {'P', '1', '2', '3', '4', '5', '6', 'E'};
 char end_session[END_SESSION_CMD_SIZE] = {'T', '8', '1', '2', '3', '4', '5', '6', 'E'};
-uint8_t pin_control[8] = {13, 12, 14, 32, 5, 18, 19, 23};
+uint8_t pin_control[8] = {14, 13, 12, 8, 16, 17, 18, 19};
 char keys[4][4] =
     {
         {'L', '3', '2', '1'},
@@ -120,12 +121,22 @@ static void press_key(char key)
 
 void virtual_keypad_init()
 {
+    /*
+     * 0: keypad outputs are controlled by the ESP32-S3.
+     * 1: keypad is controlled directly by the external circuit.
+     * Set the output latch before enabling output mode to avoid a HIGH glitch.
+     */
+    ESP_ERROR_CHECK(gpio_set_level(ON_OFF_VIRTUAL_KEYPAD, 1));
+    ESP_ERROR_CHECK(gpio_set_direction(ON_OFF_VIRTUAL_KEYPAD, GPIO_MODE_OUTPUT));
+
     for (int i = 0; i < MAPPING_TABLE_SIZE; i++)
     {
         esp_rom_gpio_pad_select_gpio(pin_control[i]);
         gpio_set_direction(pin_control[i], GPIO_MODE_OUTPUT);
     }
     virtual_keypad_idle();
+    ESP_LOGI(TAG, "Virtual keypad control enabled on ESP32-S3 (GPIO%d=0)",
+             ON_OFF_VIRTUAL_KEYPAD);
     set_price_task_sem = xSemaphoreCreateBinary();
     xSemaphoreGive(set_price_task_sem);
 }

@@ -17,8 +17,8 @@
  * - Pin assignment: see defines below (See Kconfig)
  */
 
-#define FD_RS232_TXD (17)
-#define FD_RS232_RXD (16)
+#define FD_RS232_TXD (10)
+#define FD_RS232_RXD (11)
 #define FD_RS232_RTS (UART_PIN_NO_CHANGE)
 #define FD_RS232_CTS (UART_PIN_NO_CHANGE)
 
@@ -35,18 +35,50 @@
 // #define ROW_E_INT_PIN (25) //button row E
 // #define COL_E_INT_PIN (33) //button col E
 
-// new HW
-#define COL_8_INT_PIN (27) //button col 8
-#define ROW_8_INT_PIN (33) //button row 8
-#define ROW_E_INT_PIN (25) //button row E
-#define COL_E_INT_PIN (26) //button col E
+// ESP32-S3 keypad matrix wiring
+#define KEYPAD_ROW_1_PIN GPIO_NUM_41
+#define KEYPAD_ROW_2_PIN GPIO_NUM_40
+#define KEYPAD_ROW_3_PIN GPIO_NUM_39
+#define KEYPAD_ROW_4_PIN GPIO_NUM_38
+#define KEYPAD_ROW_5_PIN GPIO_NUM_20
 
-static volatile int disable_intr_times_1 = 0,disable_intr_times_2 = 0;  // use this to calculate how many times it go into interrupt
-static volatile int disable_intr_times_3 = 0,disable_intr_times_4 = 0; 
+#define KEYPAD_COL_1_PIN GPIO_NUM_37
+#define KEYPAD_COL_2_PIN GPIO_NUM_36
+#define KEYPAD_COL_3_PIN GPIO_NUM_35
+#define KEYPAD_COL_4_PIN GPIO_NUM_21
+
+// Compatibility aliases used by the existing state machine.
+#define ROW_8_INT_PIN KEYPAD_ROW_3_PIN
+#define COL_8_INT_PIN KEYPAD_COL_2_PIN
+#define ROW_E_INT_PIN KEYPAD_ROW_4_PIN
+#define COL_E_INT_PIN KEYPAD_COL_3_PIN
+
 static volatile int col_8_detected=0,row_8_detected=0;
 static volatile int col_E_detected=0,row_E_detected=0;
 
-#define BTN_DEBUG_POLL_MS 20
+#define KEYPAD_DEBOUNCE_MS 250
+#define KEYPAD_ROW_COUNT 5
+#define KEYPAD_COL_COUNT 4
+
+static gpio_num_t keypad_row_pins[KEYPAD_ROW_COUNT] = {
+    KEYPAD_ROW_1_PIN, KEYPAD_ROW_2_PIN, KEYPAD_ROW_3_PIN,
+    KEYPAD_ROW_4_PIN, KEYPAD_ROW_5_PIN
+};
+
+static gpio_num_t keypad_col_pins[KEYPAD_COL_COUNT] = {
+    KEYPAD_COL_1_PIN, KEYPAD_COL_2_PIN,
+    KEYPAD_COL_3_PIN, KEYPAD_COL_4_PIN
+};
+
+static char keypad_keys[KEYPAD_ROW_COUNT][KEYPAD_COL_COUNT] = {
+    {'1', '2', '3', 'L'},
+    {'4', '5', '6', '$'},
+    {'7', '8', '9', 'P'},
+    {'C', '0', 'E', 'T'},
+    {'1', '2', '3', '4'} // F1..F4; row 5 is formatted specially.
+};
+
+static volatile TickType_t keypad_last_press_tick[KEYPAD_ROW_COUNT][KEYPAD_COL_COUNT];
 
 // Util functions
 void DecToHexStr(int dec, char *str) { 
@@ -267,7 +299,6 @@ static void read_rs232_task(void *arg)
                                 fd_op.state = IDLE;
                                 break;
                             }
-                            gpio_intr_enable(COL_8_INT_PIN);
                             gpio_intr_enable(ROW_8_INT_PIN);
                             // gpio_intr_enable(COL_E_INT_PIN);
                             // gpio_intr_enable(ROW_E_INT_PIN);
@@ -279,18 +310,18 @@ static void read_rs232_task(void *arg)
                                     ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: row/col 8 detected, user press 8 >>>>> switch to USER_PRESS_T8 mode");
                                     fd_op.state = USER_PRESS_T8;
                                     row_8_detected=col_8_detected=0; //clear int pins
-                                    gpio_intr_disable(COL_8_INT_PIN);
                                     gpio_intr_disable(ROW_8_INT_PIN);
                                 }
                                 else {
                                     ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: row/col 8 detected but RS232 data does not match FILLING_PW, data[19]=0x%02x", fd_op.data[19]);
+                                    row_8_detected = col_8_detected = 0;
+                                    gpio_intr_enable(ROW_8_INT_PIN);
                                 }
                             }
                             else if(row_8_detected || col_8_detected)
                             {
                                 ESP_LOGI("STATE_MACHINE", "USER_PRESS_T: partial 8 detect row=%d col=%d, clear and wait again", row_8_detected, col_8_detected);
                                 row_8_detected=col_8_detected=0;
-                                gpio_intr_enable(COL_8_INT_PIN);
                                 gpio_intr_enable(ROW_8_INT_PIN);
                             }
                             break;
@@ -301,9 +332,8 @@ static void read_rs232_task(void *arg)
                             if(fd_op.data[11] == 0x9c ) //Password is filled
                             {
                                 fd_op.state=USER_FILL_PW;
-                                gpio_intr_enable(COL_E_INT_PIN); 
-                                gpio_intr_enable(ROW_E_INT_PIN);
                                 row_E_detected=col_E_detected=0;
+                                gpio_intr_enable(ROW_E_INT_PIN);
                                 ESP_LOGD("STATE_MACHINE", "USER_PRESS_T8 >>>>> USER_FILL_PW");
                             }
                             if((fd_op.data[19] & 0x0F) == 0x04) {
@@ -347,7 +377,6 @@ static void read_rs232_task(void *arg)
                                 ESP_LOGI(TAG,"row_E_detected %d, col_E_detected %d, fd_op.data[19] %d",row_E_detected,col_E_detected, fd_op.data[19]);
                                 user_pressed_E = true;
                                 row_E_detected=col_E_detected=0; //clear int pins
-                                gpio_intr_disable(COL_E_INT_PIN);
                                 gpio_intr_disable(ROW_E_INT_PIN);
                                 
                                 // if((fd_op.data[19] & 0x0F) == 0x04) {  
@@ -358,7 +387,6 @@ static void read_rs232_task(void *arg)
                             else if(row_E_detected || col_E_detected)
                             {
                                 row_E_detected=col_E_detected=0; 
-                                gpio_intr_enable(COL_E_INT_PIN);
                                 gpio_intr_enable(ROW_E_INT_PIN);
                                 // printf("Clear col and row to zero\n");
                             } 
@@ -390,157 +418,88 @@ static void read_rs232_task(void *arg)
     }
 }
 
-void IRAM_ATTR row_btn_8_gpio_isr_handler(void* arg)
+static void IRAM_ATTR keypad_row_gpio_isr_handler(void *arg)
 {
-    uint32_t gpio_num = (uint32_t) arg;
-    disable_intr_times_1++;
-    row_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_8_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_1);
-    gpio_intr_disable(gpio_num);
-}
+    uint32_t row = (uint32_t)(uintptr_t)arg;
+    uint32_t active_columns = 0;
 
-void IRAM_ATTR col_btn_8_gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-    disable_intr_times_2++;
-    col_8_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_8_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_2);
-    gpio_intr_disable(gpio_num);
-}
-
-void IRAM_ATTR row_btn_E_gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-    disable_intr_times_3++;
-    row_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, row_E_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_3);
-    gpio_intr_disable(gpio_num);
-}
-
-void IRAM_ATTR col_btn_E_gpio_isr_handler(void* arg)
-{
-    uint32_t gpio_num = (uint32_t) arg;
-    disable_intr_times_4++;
-    col_E_detected=1;
-    esp_rom_printf("GPIO[%d] intr, col_E_detected level=%d, count=%d\n", gpio_num, gpio_get_level(gpio_num), disable_intr_times_4);
-    gpio_intr_disable(gpio_num);
-}
-
-static void button_input_debug_task(void *arg)
-{
-    (void)arg;
-    int prev_col_8 = gpio_get_level(COL_8_INT_PIN);
-    int prev_row_8 = gpio_get_level(ROW_8_INT_PIN);
-    int prev_col_E = gpio_get_level(COL_E_INT_PIN);
-    int prev_row_E = gpio_get_level(ROW_E_INT_PIN);
-
-    ESP_LOGI(TAG, "BTN input debug started: COL_8 GPIO%d=%d, ROW_8 GPIO%d=%d, COL_E GPIO%d=%d, ROW_E GPIO%d=%d",
-             COL_8_INT_PIN, prev_col_8,
-             ROW_8_INT_PIN, prev_row_8,
-             COL_E_INT_PIN, prev_col_E,
-             ROW_E_INT_PIN, prev_row_E);
-
-    for (;;) {
-        int col_8 = gpio_get_level(COL_8_INT_PIN);
-        int row_8 = gpio_get_level(ROW_8_INT_PIN);
-        int col_E = gpio_get_level(COL_E_INT_PIN);
-        int row_E = gpio_get_level(ROW_E_INT_PIN);
-
-        if (col_8 != prev_col_8) {
-            ESP_LOGI(TAG, "BTN input edge: COL_8 GPIO%d %d -> %d", COL_8_INT_PIN, prev_col_8, col_8);
-            prev_col_8 = col_8;
+    for (uint32_t col = 0; col < KEYPAD_COL_COUNT; col++) {
+        if (gpio_get_level(keypad_col_pins[col]) == 1) {
+            active_columns |= (1U << col);
         }
-        if (row_8 != prev_row_8) {
-            ESP_LOGI(TAG, "BTN input edge: ROW_8 GPIO%d %d -> %d", ROW_8_INT_PIN, prev_row_8, row_8);
-            prev_row_8 = row_8;
-        }
-        if (col_E != prev_col_E) {
-            ESP_LOGI(TAG, "BTN input edge: COL_E GPIO%d %d -> %d", COL_E_INT_PIN, prev_col_E, col_E);
-            prev_col_E = col_E;
-        }
-        if (row_E != prev_row_E) {
-            ESP_LOGI(TAG, "BTN input edge: ROW_E GPIO%d %d -> %d", ROW_E_INT_PIN, prev_row_E, row_E);
-            prev_row_E = row_E;
-        }
+    }
 
-        vTaskDelay(pdMS_TO_TICKS(BTN_DEBUG_POLL_MS));
+    // Accept only a one-hot column sample. Zero or multiple active columns
+    // mean that the scan phase is not suitable for identifying a key.
+    if (active_columns == 0 ||
+        (active_columns & (active_columns - 1U)) != 0) {
+        return;
+    }
+
+    uint32_t col = 0;
+    while ((active_columns & (1U << col)) == 0) {
+        col++;
+    }
+
+    TickType_t now = xTaskGetTickCountFromISR();
+    if ((now - keypad_last_press_tick[row][col]) <
+        pdMS_TO_TICKS(KEYPAD_DEBOUNCE_MS)) {
+        return;
+    }
+    keypad_last_press_tick[row][col] = now;
+
+    if (row == 4) {
+        esp_rom_printf("KEY PRESSED: F%c (R%u C%u)\n",
+                       keypad_keys[row][col], row + 1, col + 1);
+    } else {
+        esp_rom_printf("KEY PRESSED: %c (R%u C%u)\n",
+                       keypad_keys[row][col], row + 1, col + 1);
     }
 }
 
-
-static gpio_config_t init_io(gpio_num_t num)
-{
-    //TEST_ASSERT(num < TEST_GPIO_OUTPUT_MAX);
-    gpio_config_t io_conf;
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << num);
-    io_conf.pull_down_en = 0;
-    io_conf.pull_up_en = 0;
-    return io_conf;
-}
-
 void config_btn_E_interrupt() {
-    gpio_config_t io_int_row_8_config=init_io(ROW_8_INT_PIN);
-    gpio_config_t io_int_col_8_config=init_io(COL_8_INT_PIN);
-    gpio_config_t io_int_row_E_config=init_io(ROW_E_INT_PIN);
-    gpio_config_t io_int_col_E_config=init_io(COL_E_INT_PIN);
-#if 1
-    //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
-    io_int_row_8_config.intr_type = GPIO_INTR_ANYEDGE;
-    io_int_row_8_config.mode = GPIO_MODE_INPUT;
-    io_int_row_8_config.pull_up_en = 1;
-    gpio_config(&io_int_row_8_config);
-    gpio_set_intr_type(ROW_8_INT_PIN, GPIO_INTR_POSEDGE); //rising edge detecting
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(ROW_8_INT_PIN, row_btn_8_gpio_isr_handler, (void *) ROW_8_INT_PIN);
-    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    gpio_intr_disable(ROW_8_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d", gpio_get_level(ROW_8_INT_PIN));
+    uint64_t row_pin_mask = 0;
+    uint64_t col_pin_mask = 0;
 
-    
+    for (uint32_t row = 0; row < KEYPAD_ROW_COUNT; row++) {
+        row_pin_mask |= (1ULL << keypad_row_pins[row]);
+    }
+    for (uint32_t col = 0; col < KEYPAD_COL_COUNT; col++) {
+        col_pin_mask |= (1ULL << keypad_col_pins[col]);
+    }
 
-    // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
-    io_int_col_8_config.intr_type = GPIO_INTR_ANYEDGE;
-    io_int_col_8_config.mode = GPIO_MODE_INPUT;
-    io_int_col_8_config.pull_up_en = 1;
-    gpio_config(&io_int_col_8_config);
-    gpio_set_intr_type(COL_8_INT_PIN, GPIO_INTR_NEGEDGE); //falling edge detecting 
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(COL_8_INT_PIN, col_btn_8_gpio_isr_handler, (void *) COL_8_INT_PIN);
-    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    gpio_intr_disable(COL_8_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d", gpio_get_level(COL_8_INT_PIN));
-#endif
+    gpio_config_t row_config = {
+        .pin_bit_mask = row_pin_mask,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_POSEDGE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&row_config));
 
-    //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
-    io_int_row_E_config.intr_type = GPIO_INTR_ANYEDGE;
-    io_int_row_E_config.mode = GPIO_MODE_INPUT;
-    io_int_row_E_config.pull_up_en = 1;
-    gpio_config(&io_int_row_E_config);
-    gpio_set_intr_type(ROW_E_INT_PIN, GPIO_INTR_POSEDGE); //rising edge detecting
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(ROW_E_INT_PIN, row_btn_E_gpio_isr_handler, (void *) ROW_E_INT_PIN);
-    gpio_intr_disable(ROW_E_INT_PIN);
-    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    ESP_LOGI(TAG,"get level:%d", gpio_get_level(ROW_E_INT_PIN));
+    gpio_config_t col_config = {
+        .pin_bit_mask = col_pin_mask,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&col_config));
 
+    for (uint32_t row = 0; row < KEYPAD_ROW_COUNT; row++) {
+        ESP_ERROR_CHECK(gpio_isr_handler_add(
+            keypad_row_pins[row],
+            keypad_row_gpio_isr_handler,
+            (void *)(uintptr_t)row));
+        gpio_intr_enable(keypad_row_pins[row]);
+        ESP_LOGI(TAG, "Keypad R%lu GPIO%d idle=%d",
+                 (unsigned long)(row + 1), keypad_row_pins[row],
+                 gpio_get_level(keypad_row_pins[row]));
+    }
 
-    // //io_int_config.pin_bit_mask = 1ULL<<E_INT_PIN;
-    io_int_col_E_config.intr_type = GPIO_INTR_ANYEDGE;
-    io_int_col_E_config.mode = GPIO_MODE_INPUT;
-    io_int_col_E_config.pull_up_en = 1;
-    gpio_config(&io_int_col_E_config);
-    gpio_set_intr_type(COL_E_INT_PIN, GPIO_INTR_NEGEDGE); //falling edge detecting 
-    gpio_install_isr_service(0);
-    gpio_isr_handler_add(COL_E_INT_PIN, col_btn_E_gpio_isr_handler, (void *) COL_E_INT_PIN);
-    //gpio_set_level(TEST_GPIO_EXT_OUT_IO, 0);
-    gpio_intr_disable(COL_E_INT_PIN);
-    ESP_LOGI(TAG,"get level:%d", gpio_get_level(COL_E_INT_PIN));
-
-    // gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1 );
-    //gpio_isr_handler_add(E_INT_PIN, btn_E_gpio_isr_handler, (void*) E_INT_PIN);
-    //gpio_set_level(1);
+    ESP_LOGI(TAG, "Keypad columns: C1=GPIO%d C2=GPIO%d C3=GPIO%d C4=GPIO%d",
+             KEYPAD_COL_1_PIN, KEYPAD_COL_2_PIN,
+             KEYPAD_COL_3_PIN, KEYPAD_COL_4_PIN);
 }
 
 void rs232_config(void)
@@ -569,5 +528,8 @@ void rs232_config(void)
    // pinMode()
     ESP_LOGI(TAG,"Create RS232 task \n");
     xTaskCreate(&read_rs232_task, "read_rs232_task", FD_TASK_STACK_SIZE, NULL, 10, NULL);
-    xTaskCreate(&button_input_debug_task, "btn_input_debug", 2048, NULL, 5, NULL);
+    // Raw row/column debug polling is intentionally disabled. The keypad
+    // scan produces many pulses for one press; accepted keys are logged once
+    // by the row ISR instead.
+    // xTaskCreate(&button_input_debug_task, "btn_input_debug", 4096, NULL, 5, NULL);
 }
