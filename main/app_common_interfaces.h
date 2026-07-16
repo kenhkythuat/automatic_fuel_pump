@@ -37,6 +37,8 @@ void wifi_main(void);
 
 // rs232 configuration
 void rs232_config(void);
+void keypad_master_scan_pause_for_virtual_keypad(void);
+void keypad_master_scan_resume_after_virtual_keypad(void);
 
 // Keypad submodule interfaces
 void virtual_keypad_init();
