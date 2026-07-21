@@ -52,6 +52,10 @@
 #define KEYPAD_COL_3_PIN GPIO_NUM_35
 #define KEYPAD_COL_4_PIN GPIO_NUM_21
 
+#define INPUT_SWITCH_PIN GPIO_NUM_6
+#define INPUT_SWITCH_DEBOUNCE_MS 20
+#define CONTROL_SWITCH_PIN GPIO_NUM_7
+
 // Compatibility aliases used by the existing state machine.
 #define ROW_8_INT_PIN KEYPAD_ROW_3_PIN
 #define COL_8_INT_PIN KEYPAD_COL_2_PIN
@@ -115,6 +119,7 @@ static TickType_t keypad_last_unknown_tick[KEYPAD_ROW_COUNT];
 static volatile uint32_t keypad_col_last_fall_cycle[KEYPAD_COL_COUNT];
 static volatile uint32_t keypad_col_last_rise_cycle[KEYPAD_COL_COUNT];
 static volatile bool keypad_master_scan_paused;
+static QueueHandle_t input_switch_queue;
 
 typedef struct {
     uint8_t row;
@@ -892,6 +897,126 @@ static void keypad_configure_row_1_test(void)
              KEYPAD_COL_3_PIN, KEYPAD_COL_4_PIN);
 }
 
+static void IRAM_ATTR input_switch_isr_handler(void *arg)
+{
+    (void)arg;
+
+    if (input_switch_queue == NULL) {
+        return;
+    }
+
+    uint8_t level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
+    BaseType_t higher_priority_task_woken = pdFALSE;
+
+    xQueueOverwriteFromISR(input_switch_queue,
+                           &level,
+                           &higher_priority_task_woken);
+
+    if (higher_priority_task_woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+static void input_switch_task(void *arg)
+{
+    (void)arg;
+    uint8_t last_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
+    uint8_t queued_level = last_level;
+
+    gpio_set_level(CONTROL_SWITCH_PIN, last_level);
+    ESP_LOGI(TAG, "INPUT_SWITCH GPIO%d initial=%u",
+             INPUT_SWITCH_PIN,
+             last_level);
+    ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d initial=%u",
+             CONTROL_SWITCH_PIN,
+             last_level);
+
+    for (;;) {
+        if (xQueueReceive(input_switch_queue,
+                          &queued_level,
+                          portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(INPUT_SWITCH_DEBOUNCE_MS));
+
+        while (xQueueReceive(input_switch_queue, &queued_level, 0) == pdTRUE) {
+        }
+
+        uint8_t current_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
+        if (current_level == last_level) {
+            continue;
+        }
+
+        ESP_LOGI(TAG, "INPUT_SWITCH GPIO%d: %u -> %u (%s)",
+                 INPUT_SWITCH_PIN,
+                 last_level,
+                 current_level,
+                 current_level ? "ACTIVE" : "IDLE");
+        gpio_set_level(CONTROL_SWITCH_PIN, current_level);
+        ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d set=%u",
+                 CONTROL_SWITCH_PIN,
+                 current_level);
+        last_level = current_level;
+    }
+}
+
+static void control_switch_config(void)
+{
+    gpio_config_t control_switch_config = {
+        .pin_bit_mask = (1ULL << CONTROL_SWITCH_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&control_switch_config));
+    gpio_set_level(CONTROL_SWITCH_PIN, 0);
+
+    ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d configured as output initial=0",
+             CONTROL_SWITCH_PIN);
+}
+
+static void input_switch_config(void)
+{
+    gpio_config_t input_switch_config = {
+        .pin_bit_mask = (1ULL << INPUT_SWITCH_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&input_switch_config));
+
+    input_switch_queue = xQueueCreate(1, sizeof(uint8_t));
+    if (input_switch_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create INPUT_SWITCH queue");
+        return;
+    }
+
+    ESP_ERROR_CHECK(gpio_isr_handler_add(INPUT_SWITCH_PIN,
+                                         input_switch_isr_handler,
+                                         NULL));
+    gpio_intr_enable(INPUT_SWITCH_PIN);
+
+    BaseType_t task_created = xTaskCreate(input_switch_task,
+                                          "input_switch",
+                                          2048,
+                                          NULL,
+                                          6,
+                                          NULL);
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create INPUT_SWITCH task");
+        gpio_isr_handler_remove(INPUT_SWITCH_PIN);
+        vQueueDelete(input_switch_queue);
+        input_switch_queue = NULL;
+        return;
+    }
+
+    ESP_LOGI(TAG, "INPUT_SWITCH GPIO%d configured as input any-edge, no internal pull",
+             INPUT_SWITCH_PIN);
+}
+
 static void IRAM_ATTR keypad_col_gpio_isr_handler(void *arg)
 {
     uint32_t col = (uint32_t)(uintptr_t)arg;
@@ -1139,6 +1264,9 @@ void rs232_config(void)
     ESP_ERROR_CHECK(uart_driver_install(FD_UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
     ESP_ERROR_CHECK(uart_param_config(FD_UART_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(FD_UART_PORT_NUM, FD_RS232_TXD, FD_RS232_RXD, FD_RS232_RTS, FD_RS232_CTS));
+
+    control_switch_config();
+    input_switch_config();
 
 #if KEYPAD_COL_SCAN_ROW_HIZ_DEBUG
     keypad_configure_col_scan_row_hiz_debug();

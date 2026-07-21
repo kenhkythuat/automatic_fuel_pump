@@ -1,0 +1,148 @@
+# Fuel device ⇄ server protocol (firmware team)
+
+This is the MQTT contract between a fuel device and the payment server. **The one new
+requirement is: echo back the `msg_id` we send in the command.** Everything else matches
+the existing behaviour.
+
+- Broker: TBMQ (authenticated **by client id** — each device needs its own client id/creds).
+- Topic prefix: `tbmq/payment` (configurable server-side as `TOPIC_PREFIX`).
+- Every device is addressed by `<gw>/<node>` (gateway id / node id).
+- QoS 1 for all messages. Payloads are JSON (UTF-8).
+
+## Topics
+
+| Direction | Topic | Who publishes |
+|---|---|---|
+| Command   | `tbmq/payment/<gw>/<node>/command`   | **server → device** |
+| ACK       | `tbmq/payment/<gw>/<node>/ack`       | **device → server** |
+| Telemetry | `tbmq/payment/<gw>/<node>/telemetry` | **device → server** |
+| Completion| `tbmq/payment/<gw>/<node>/event`     | **device → server** |
+
+The device subscribes to its `.../command` topic and publishes on the other three.
+
+---
+
+## 1. Command (server → device)
+
+### Set amount to dispense
+```json
+{
+  "cmd": "set_qr_money",
+  "param": { "qr_money": 50000 },
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
+}
+```
+
+### Cancel
+```json
+{
+  "cmd": "cancel_qr_money",
+  "param": { "cancel_qr_money": 1 },
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
+}
+```
+
+> **`msg_id` is new and REQUIRED to be echoed back.** It is a per-transaction correlation
+> id (32-hex string). The device must store the `msg_id` from the last `set_qr_money` and
+> include it in **every** ACK / telemetry / completion for that dispense. This lets the
+> server settle the correct transaction even if a response is late or a new dispense has
+> already started on the same nozzle.
+
+---
+
+## 2. ACK (device → server) — **required**
+
+Reply as soon as the command is received/validated. **Echo `msg_id`.**
+
+Accepted:
+```json
+{ "ts": 1736900000, "ack_to": "set_qr_money", "result": "ok",
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011" }
+```
+
+Rejected (server releases the held money and marks the transaction failed):
+```json
+{ "ts": 1736900000, "ack_to": "set_qr_money", "result": "error",
+  "description": "wrong_money",
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011" }
+```
+
+- `result`: `"ok"` or `"error"` (anything not `"ok"` = error).
+- **Timeout:** if the server does **not** receive an ACK within
+  **`PUMP_ACK_TIMEOUT_SECONDS` (default 90s)**, it auto-cancels: it re-sends
+  `cancel_qr_money`, refunds the user, and marks the transaction `expired`. So please ACK
+  quickly — ideally within a few seconds.
+
+---
+
+## 3. Telemetry (device → server)
+
+Publish periodically while dispensing. **Echo `msg_id`.** `liter` and `price` may be at the
+top level or inside a `data` object (both are accepted):
+
+```json
+{
+  "ts": 1736900010,
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011",
+  "data": {
+    "time_device": "2026/07/15 10:00:10",
+    "price": 23000,
+    "money": 46000,
+    "liter": 2.0,
+    "device_status": "ok"
+  }
+}
+```
+
+---
+
+## 4. Completion event (device → server) — **required to charge the user**
+
+When the dispense finishes, publish ONE event on `.../event`. **This is what charges the
+customer** (server captures `actual = round(liter × price)` and refunds the remainder).
+**Echo `msg_id`** and include the final `liter` + `price`.
+
+```json
+{
+  "ts": 1736900030,
+  "event": "completed",
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011",
+  "liter": 2.0,
+  "price": 23000
+}
+```
+
+- The completion marker can be in any of `event` / `status` / `cmd` / `type` / `result`,
+  and its value must be one of (configurable, `PUMP_COMPLETE_EVENT_VALUES`):
+  `completed`, `done`, `finished`, `qr_money_done`, `complete`.
+- If the event omits `liter`/`price`, the server falls back to the **last telemetry**. To be
+  safe, always include the final `liter` and `price` in the completion event.
+- If the completion arrives **after** the 90s ACK timeout (the transaction was already
+  auto-cancelled), the server reconciles: it re-charges the actual dispensed amount, matched
+  by `msg_id`. **This only works if the device echoes `msg_id`** — otherwise a late
+  completion cannot be attributed correctly.
+
+---
+
+## Full happy-path sequence
+
+```
+server → device   command   set_qr_money  qr_money=50000  msg_id=ABC
+device → server   ack       result=ok                     msg_id=ABC     (within 90s)
+device → server   telemetry liter=1.0 price=23000          msg_id=ABC
+device → server   telemetry liter=2.0 price=23000          msg_id=ABC
+device → server   event     completed liter=2.0 price=23000 msg_id=ABC   → user charged 46000
+```
+
+## Checklist for firmware
+
+- [ ] Subscribe `tbmq/payment/<gw>/<node>/command` (QoS 1).
+- [ ] Store the `msg_id` from each `set_qr_money`.
+- [ ] **Echo that `msg_id`** in every `ack`, `telemetry`, and completion `event`.
+- [ ] Send the ACK within a few seconds (hard limit 90s, else the transaction is cancelled).
+- [ ] Send exactly one completion `event` with a completion marker + final `liter` & `price`.
+- [ ] Use the device's own MQTT client id / credentials (not the server's).
+
+> If a different field name than `msg_id` is easier on the firmware side, the server also
+> accepts `cmd_id` / `command_id` / `ack_to_id` (top level or inside `data`). Tell the
+> backend team which one you'll use so we lock it in.
