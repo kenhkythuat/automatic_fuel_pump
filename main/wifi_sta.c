@@ -41,10 +41,16 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
+        status_led_set_wifi_connected(true);
         /* Signal main application to continue execution */
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_EVENT);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
+        status_led_set_wifi_connected(false);
+        if (wifi_config_portal_is_active()) {
+            ESP_LOGW(TAG, "WiFi config portal active, skip STA reconnect");
+            return;
+        }
         esp_wifi_connect();
     }
 }
@@ -87,6 +93,22 @@ extern void wifi_sta_main(void)
 {
     const esp_partition_t *next_partition;
     esp_err_t err;
+    char wifi_ssid[33];
+    char wifi_password[65];
+    bool has_saved_wifi = wifi_config_load_credentials(wifi_ssid,
+                                                       sizeof(wifi_ssid),
+                                                       wifi_password,
+                                                       sizeof(wifi_password));
+
+    if (!has_saved_wifi) {
+        strlcpy(wifi_ssid, EXAMPLE_ESP_WIFI_SSID, sizeof(wifi_ssid));
+        strlcpy(wifi_password, EXAMPLE_ESP_WIFI_PASS, sizeof(wifi_password));
+        ESP_LOGW(TAG, "No saved WiFi credentials, using firmware default SSID: %s",
+                 wifi_ssid);
+    } else {
+        ESP_LOGI(TAG, "Using saved WiFi SSID from flash: %s", wifi_ssid);
+    }
+
     /* Initialize TCP/IP */
     ESP_ERROR_CHECK(esp_netif_init());
 
@@ -103,26 +125,37 @@ extern void wifi_sta_main(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = EXAMPLE_ESP_WIFI_SSID,
-            .password = EXAMPLE_ESP_WIFI_PASS,
-        },
-    };
+    wifi_config_t wifi_config = {0};
+    strlcpy((char *)wifi_config.sta.ssid,
+            wifi_ssid,
+            sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password,
+            wifi_password,
+            sizeof(wifi_config.sta.password));
 
         /* Start Wi-Fi station */
         //wifi_init_sta();
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
     ESP_ERROR_CHECK(esp_wifi_start() );
+    wifi_config_button_init();
 
     /* Wait for Wi-Fi connection */
     int ret=xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, false, true, WIFI_AP_TIMEOUT);
     ESP_LOGI(TAG, "Wifi return : %d",ret);
     if(ret==0) //timeout occurs should return to main boot partition (LORA)
     {
+        if (wifi_config_portal_is_active()) {
+            ESP_LOGW(TAG, "WiFi connect timeout while config portal is active, waiting for user save");
+            while (wifi_config_portal_is_active()) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            return;
+        }
+
         next_partition = esp_ota_get_next_update_partition(NULL);
         err = esp_ota_set_boot_partition(next_partition);
+        ESP_ERROR_CHECK(err);
         ESP_LOGE(TAG, "Wifi AP not found, reboot to main partition\n");
         esp_restart();
     }

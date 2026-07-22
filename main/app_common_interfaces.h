@@ -1,6 +1,7 @@
 #ifndef _APPCOMMONINTERFACES_H_
 #define _APPCOMMONINTERFACES_H_
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
@@ -34,14 +35,30 @@ extern char* deviceID;
 
 // Wifi variables and function
 void wifi_main(void);
+bool wifi_config_load_credentials(char *ssid,
+                                  size_t ssid_size,
+                                  char *password,
+                                  size_t password_size);
+void wifi_config_button_init(void);
+void wifi_config_portal_start(void);
+bool wifi_config_portal_is_active(void);
+
+// Status LED
+void status_led_init(void);
+void status_led_set_wifi_connected(bool connected);
 
 // rs232 configuration
 void rs232_config(void);
 void keypad_master_scan_pause_for_virtual_keypad(void);
 void keypad_master_scan_resume_after_virtual_keypad(void);
+void keypad_master_scan_disable_for_external_physical_keypad(void);
+void payment_input_switch_update(uint8_t level);
+void keypad_password_handle_key_event(char key, bool pressed);
+bool keypad_password_is_unlocked(void);
 
 // Keypad submodule interfaces
 void virtual_keypad_init();
+void virtual_keypad_set_external_physical(bool enabled);
 void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
 void cancel_qr_money_by_vir_keypad(void *arg);
@@ -50,5 +67,6 @@ void end_session_by_vir_keypad(void *arg);
 // OTA function
 void ota_update(char *url);
 void FD_wifi_mqtt_config();
+void FD_wifi_mqtt_stop_for_config_portal(void);
 
 #endif

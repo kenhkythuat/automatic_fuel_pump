@@ -54,6 +54,7 @@
 
 #define INPUT_SWITCH_PIN GPIO_NUM_6
 #define INPUT_SWITCH_DEBOUNCE_MS 20
+#define INPUT_SWITCH_TASK_STACK_SIZE 6144
 #define CONTROL_SWITCH_PIN GPIO_NUM_7
 
 // Compatibility aliases used by the existing state machine.
@@ -72,7 +73,7 @@ static volatile int col_E_detected=0,row_E_detected=0;
 //   C1..C4 are released to Hi-Z, then resumed after the virtual key sequence.
 #define KEYPAD_COL_SCAN_ROW_HIZ_DEBUG 0
 #define KEYPAD_HIZ_PROBE_DEBUG 0
-#define KEYPAD_MASTER_SCAN_DEBUG 1
+#define KEYPAD_MASTER_SCAN_DEBUG 0
 #define KEYPAD_RAW_DEBUG 0
 #define KEYPAD_ROW_1_TEST 0
 #define KEYPAD_ROW_COUNT 5
@@ -119,6 +120,7 @@ static TickType_t keypad_last_unknown_tick[KEYPAD_ROW_COUNT];
 static volatile uint32_t keypad_col_last_fall_cycle[KEYPAD_COL_COUNT];
 static volatile uint32_t keypad_col_last_rise_cycle[KEYPAD_COL_COUNT];
 static volatile bool keypad_master_scan_paused;
+static volatile bool keypad_master_scan_external_physical_mode;
 static QueueHandle_t input_switch_queue;
 
 typedef struct {
@@ -498,20 +500,23 @@ static void keypad_configure_hiz_probe_debug(void)
 static void keypad_log_master_event(uint32_t row, uint32_t col, bool pressed)
 {
     const char *state = pressed ? "PRESSED" : "RELEASED";
+    char key = keypad_keys[row][col];
 
     if (row == 4) {
         ESP_LOGI(TAG, "KEYPAD MASTER %s: F%c (R%lu C%lu)",
                  state,
-                 keypad_keys[row][col],
+                 key,
                  (unsigned long)(row + 1),
                  (unsigned long)(col + 1));
     } else {
         ESP_LOGI(TAG, "KEYPAD MASTER %s: %c (R%lu C%lu)",
                  state,
-                 keypad_keys[row][col],
+                 key,
                  (unsigned long)(row + 1),
                  (unsigned long)(col + 1));
     }
+
+    keypad_password_handle_key_event(key, pressed);
 }
 
 static void keypad_master_scan_set_columns_hiz(void)
@@ -588,12 +593,30 @@ void keypad_master_scan_pause_for_virtual_keypad(void)
 void keypad_master_scan_resume_after_virtual_keypad(void)
 {
 #if KEYPAD_MASTER_SCAN_DEBUG
+    if (keypad_master_scan_external_physical_mode) {
+        ESP_LOGW(TAG, "Keypad master scan resume skipped: external physical keypad mode");
+        return;
+    }
+
     keypad_master_scan_set_rows_input(true);
     keypad_master_scan_set_columns_output();
     keypad_master_scan_paused = false;
     ESP_LOGW(TAG, "Keypad master scan resumed: rows pulldown, C1..C4 output scan enabled");
 #else
     ESP_LOGD(TAG, "Keypad master scan resume ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
+#endif
+}
+
+void keypad_master_scan_disable_for_external_physical_keypad(void)
+{
+#if KEYPAD_MASTER_SCAN_DEBUG
+    keypad_master_scan_external_physical_mode = true;
+    keypad_master_scan_paused = true;
+    keypad_master_scan_set_rows_input(false);
+    keypad_master_scan_set_columns_hiz();
+    ESP_LOGW(TAG, "Keypad master scan disabled: rows/cols Hi-Z, external physical keypad only");
+#else
+    ESP_LOGD(TAG, "Keypad master scan disable ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
 #endif
 }
 
@@ -676,6 +699,7 @@ static void keypad_configure_master_scan_debug(void)
     (void)row_pin_mask;
     (void)col_pin_mask;
     keypad_master_scan_paused = false;
+    keypad_master_scan_external_physical_mode = false;
     keypad_master_scan_set_rows_input(true);
     keypad_master_scan_set_columns_output();
 
@@ -957,6 +981,11 @@ static void input_switch_task(void *arg)
         ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d set=%u",
                  CONTROL_SWITCH_PIN,
                  current_level);
+        ESP_LOGI(TAG, "INPUT_SWITCH task stack free before payment update=%u",
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+        payment_input_switch_update(current_level);
+        ESP_LOGI(TAG, "INPUT_SWITCH task stack free after payment update=%u",
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
         last_level = current_level;
     }
 }
@@ -1001,7 +1030,7 @@ static void input_switch_config(void)
 
     BaseType_t task_created = xTaskCreate(input_switch_task,
                                           "input_switch",
-                                          2048,
+                                          INPUT_SWITCH_TASK_STACK_SIZE,
                                           NULL,
                                           6,
                                           NULL);

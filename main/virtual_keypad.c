@@ -19,16 +19,18 @@
 
 // 1: route the real external keypad through 74HC4053.
 // 0: route the ESP32 virtual keypad outputs through 74HC4053.
-#define USE_EXTERNAL_PHYSICAL_KEYPAD 0
+#define USE_EXTERNAL_PHYSICAL_KEYPAD 1
 static SemaphoreHandle_t set_price_task_sem;
 #define VIRTUAL_KEYPAD_SWEEP_TEST 0
-#define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 400
+#define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 800
 #define VIRTUAL_KEYPAD_SWEEP_PERIOD_MS 1000
 #define VIRTUAL_KEYPAD_ADDR_SETTLE_MS 20
+#define VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS 120
 #define ORDER_CMD_SIZE 8
 #define END_SESSION_CMD_SIZE 9
 #define MAPPING_TABLE_SIZE 8
 
+static bool virtual_keypad_external_physical_enabled;
 char order[ORDER_CMD_SIZE] = {'P', '1', '2', '3', '4', '5', '6', 'E'};
 char end_session[END_SESSION_CMD_SIZE] = {'T', '8', '1', '2', '3', '4', '5', '6', 'E'};
 uint8_t pin_control[8] = {14, 13, 12, 8, 16, 17, 18, 19};
@@ -81,6 +83,18 @@ static void virtual_keypad_idle(void)
     gpio_set_level(PIN_CHANEL_SELECT_2C, 0);
 }
 
+void virtual_keypad_set_external_physical(bool enabled)
+{
+    virtual_keypad_external_physical_enabled = enabled;
+    virtual_keypad_idle();
+    gpio_set_level(ON_OFF_VIRTUAL_KEYPAD, enabled ? 1 : 0);
+    gpio_set_direction(ON_OFF_VIRTUAL_KEYPAD, GPIO_MODE_OUTPUT);
+    ESP_LOGW(TAG, "Keypad route GPIO%d=%d (%s)",
+             ON_OFF_VIRTUAL_KEYPAD,
+             enabled ? 1 : 0,
+             enabled ? "external physical keypad" : "ESP32 virtual keypad");
+}
+
 static void psudoe_press_timed(uint8_t cluster, uint8_t pin, uint32_t press_ms, uint32_t gap_ms)
 {
     if (cluster == 1)
@@ -120,15 +134,26 @@ static void psudoe_press(uint8_t cluster, uint8_t pin)
 
 static void press_key(char key)
 {
+    if (virtual_keypad_external_physical_enabled) {
+        ESP_LOGW(TAG, "Skip virtual key=%c: external physical keypad mode is active", key);
+        return;
+    }
+
     for (int j = 0; j < MAPPING_TABLE_SIZE; j++)
     {
         if (key == mapping_table_1[j].btn)
         {
+            ESP_LOGI(TAG, "Virtual press key=%c cluster=1 mux_pin=%u",
+                     key,
+                     mapping_table_1[j].pin);
             psudoe_press(1, mapping_table_1[j].pin);
             return;
         }
         else if (key == mapping_table_2[j].btn)
         {
+            ESP_LOGI(TAG, "Virtual press key=%c cluster=2 mux_pin=%u",
+                     key,
+                     mapping_table_2[j].pin);
             psudoe_press(2, mapping_table_2[j].pin);
             return;
         }
@@ -138,6 +163,11 @@ static void press_key(char key)
 
 static bool press_key_timed(char key, uint32_t press_ms, uint32_t gap_ms)
 {
+    if (virtual_keypad_external_physical_enabled) {
+        ESP_LOGW(TAG, "SWEEP skip key=%c: external physical keypad mode is active", key);
+        return false;
+    }
+
     for (int j = 0; j < MAPPING_TABLE_SIZE; j++)
     {
         if (key == mapping_table_1[j].btn)
@@ -181,12 +211,16 @@ static void virtual_keypad_sequence_begin(const char *sequence_name)
     keypad_master_scan_pause_for_virtual_keypad();
 #endif
 
+    vTaskDelay(pdMS_TO_TICKS(VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS));
+
     ESP_LOGI(TAG, "Virtual keypad sequence begin: %s", sequence_name);
 }
 
 static void virtual_keypad_sequence_end(const char *sequence_name)
 {
     ESP_LOGI(TAG, "Virtual keypad sequence end: %s", sequence_name);
+
+    vTaskDelay(pdMS_TO_TICKS(VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS));
 
 #if !USE_EXTERNAL_PHYSICAL_KEYPAD
     keypad_master_scan_resume_after_virtual_keypad();
@@ -232,21 +266,12 @@ static void virtual_keypad_sweep_test_task(void *arg)
 
 void virtual_keypad_init()
 {
-    int keypad_route_level = USE_EXTERNAL_PHYSICAL_KEYPAD ? 1 : 0;
-
-    ESP_ERROR_CHECK(gpio_set_level(ON_OFF_VIRTUAL_KEYPAD, keypad_route_level));
-    ESP_ERROR_CHECK(gpio_set_direction(ON_OFF_VIRTUAL_KEYPAD, GPIO_MODE_OUTPUT));
-
     for (int i = 0; i < MAPPING_TABLE_SIZE; i++)
     {
         esp_rom_gpio_pad_select_gpio(pin_control[i]);
         gpio_set_direction(pin_control[i], GPIO_MODE_OUTPUT);
     }
-    virtual_keypad_idle();
-    ESP_LOGI(TAG, "Keypad route GPIO%d=%d (%s)",
-             ON_OFF_VIRTUAL_KEYPAD,
-             keypad_route_level,
-             USE_EXTERNAL_PHYSICAL_KEYPAD ? "external physical keypad" : "ESP32 virtual keypad");
+    virtual_keypad_set_external_physical(USE_EXTERNAL_PHYSICAL_KEYPAD != 0);
     set_price_task_sem = xSemaphoreCreateBinary();
     xSemaphoreGive(set_price_task_sem);
 
@@ -311,13 +336,19 @@ void cancel_qr_money_by_vir_keypad(void *arg)
 {
     (void)arg;
 
+    ESP_LOGI(TAG, "Cancel QR money task start, stack free=%u",
+             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     virtual_keypad_sequence_begin("cancel_qr_money");
+    ESP_LOGI(TAG, "Cancel QR money after sequence begin, stack free=%u",
+             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Cancel QR money start: press C");
 
     press_key('C');
 
     ESP_LOGI(TAG, "Cancel QR money completed.\n\n");
     virtual_keypad_sequence_end("cancel_qr_money");
+    ESP_LOGI(TAG, "Cancel QR money task end, stack free=%u",
+             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     vTaskDelete(NULL);
 }
 
