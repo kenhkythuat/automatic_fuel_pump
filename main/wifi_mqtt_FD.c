@@ -943,11 +943,12 @@ static void push_msg_to_broker(void *arg) {
                 if (has_payment_msg_id) {
                     snprintf(payload,
                              sizeof(payload),
-                             "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"liter\":%d,\"money\":%d,\"price\":%d,\"RSSI\":%d,\"data\":{\"price\":%d,\"money\":%d,\"liter\":%d,\"device_status\":\"ok\"}}",
+                             "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"version\":%u,\"liter\":%d,\"money\":%d,\"price\":%d,\"RSSI\":%d,\"data\":{\"price\":%d,\"money\":%d,\"liter\":%d,\"device_status\":\"ok\"}}",
                              protocol_timestamp_seconds(),
                              payment_msg_id,
                              deviceID,
                              "diesel",
+                             (unsigned int)u8FwVerion,
                              final_liter,
                              final_money,
                              final_price,
@@ -958,10 +959,11 @@ static void push_msg_to_broker(void *arg) {
                 } else {
                     snprintf(payload,
                              sizeof(payload),
-                             "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"liter\":%d,\"money\":%d,\"price\":%d,\"RSSI\":%d,\"data\":{\"price\":%d,\"money\":%d,\"liter\":%d,\"device_status\":\"ok\"}}",
+                             "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"version\":%u,\"liter\":%d,\"money\":%d,\"price\":%d,\"RSSI\":%d,\"data\":{\"price\":%d,\"money\":%d,\"liter\":%d,\"device_status\":\"ok\"}}",
                              protocol_timestamp_seconds(),
                              deviceID,
                              "diesel",
+                             (unsigned int)u8FwVerion,
                              final_liter,
                              final_money,
                              final_price,
@@ -1004,24 +1006,26 @@ static void ping_tb(void *arg) {
         if (get_active_payment_msg_id(payment_msg_id, sizeof(payment_msg_id))) {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d}",
+                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u}",
                      protocol_timestamp_seconds(),
                      payment_msg_id,
                      deviceID,
                      "diesel",
                      1,
                      ap.rssi,
-                     enable_virtual_key);
+                     enable_virtual_key,
+                     (unsigned int)u8FwVerion);
         } else {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d}",
+                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u}",
                      protocol_timestamp_seconds(),
                      deviceID,
                      "diesel",
                      1,
                      ap.rssi,
-                     enable_virtual_key);
+                     enable_virtual_key,
+                     (unsigned int)u8FwVerion);
         }
         stat = push_heartbeat_msg(payload,strlen(payload));
         if (stat >= 0) {
