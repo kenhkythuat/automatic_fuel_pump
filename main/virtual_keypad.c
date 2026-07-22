@@ -19,7 +19,7 @@
 
 // 1: route the real external keypad through 74HC4053.
 // 0: route the ESP32 virtual keypad outputs through 74HC4053.
-#define USE_EXTERNAL_PHYSICAL_KEYPAD 1
+#define USE_EXTERNAL_PHYSICAL_KEYPAD 0
 static SemaphoreHandle_t set_price_task_sem;
 #define VIRTUAL_KEYPAD_SWEEP_TEST 0
 #define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 800
@@ -93,6 +93,11 @@ void virtual_keypad_set_external_physical(bool enabled)
              ON_OFF_VIRTUAL_KEYPAD,
              enabled ? 1 : 0,
              enabled ? "external physical keypad" : "ESP32 virtual keypad");
+}
+
+bool virtual_keypad_is_enabled(void)
+{
+    return !virtual_keypad_external_physical_enabled;
 }
 
 static void psudoe_press_timed(uint8_t cluster, uint8_t pin, uint32_t press_ms, uint32_t gap_ms)

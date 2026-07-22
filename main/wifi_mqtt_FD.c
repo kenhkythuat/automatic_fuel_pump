@@ -394,6 +394,36 @@ static void handle_payment_command(const cJSON *root)
         return;
     }
 
+    if (strcmp(cmd, "enable_virtual_key") == 0) {
+        const cJSON *enable_item = cJSON_GetObjectItemCaseSensitive(param, "enable_virtual_key");
+        char enable_buf[4];
+        uint32_t enable_value = 0;
+
+        if (!parse_number_item(enable_item,
+                               enable_buf,
+                               sizeof(enable_buf),
+                               1,
+                               &enable_value)) {
+            ESP_LOGE(TAG, "Invalid param.enable_virtual_key, expected 0 or 1");
+            publish_payment_ack(cmd, "error", "invalid enable_virtual_key", msg_id);
+            return;
+        }
+
+        if (enable_value != 0) {
+            virtual_keypad_set_external_physical(false);
+            keypad_master_scan_enable_for_virtual_keypad();
+            ESP_LOGW(TAG, "Virtual keypad enabled by MQTT command, msg_id=%s", msg_id);
+        } else {
+            virtual_keypad_set_external_physical(true);
+            keypad_master_scan_disable_for_external_physical_keypad();
+            ESP_LOGW(TAG, "Virtual keypad disabled by MQTT command, external physical keypad enabled, msg_id=%s",
+                     msg_id);
+        }
+
+        publish_payment_ack(cmd, "ok", NULL, msg_id);
+        return;
+    }
+
     if (strcmp(cmd, "set_qr_money") == 0) {
         const cJSON *qr_money_item = cJSON_GetObjectItemCaseSensitive(param, "qr_money");
         char amount_buf[16];
@@ -962,6 +992,7 @@ static void ping_tb(void *arg) {
     int stat;
     wifi_ap_record_t ap;
     char payment_msg_id[TBMQ_MSG_ID_LEN + 1];
+    int enable_virtual_key = 0;
     //wifi_ap_record_t ap;
     for(;;) {
         //esp_wifi_sta_get_ap_info(&ap);
@@ -969,25 +1000,28 @@ static void ping_tb(void *arg) {
  
         // stat = esp_mqtt_client_publish(client, "/station/data", payload_ping, strlen(payload_ping), 0, false);
         esp_wifi_sta_get_ap_info(&ap);
+        enable_virtual_key = virtual_keypad_is_enabled() ? 1 : 0;
         if (get_active_payment_msg_id(payment_msg_id, sizeof(payment_msg_id))) {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
+                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d}",
                      protocol_timestamp_seconds(),
                      payment_msg_id,
                      deviceID,
                      "diesel",
                      1,
-                     ap.rssi);
+                     ap.rssi,
+                     enable_virtual_key);
         } else {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d}",
+                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d}",
                      protocol_timestamp_seconds(),
                      deviceID,
                      "diesel",
                      1,
-                     ap.rssi);
+                     ap.rssi,
+                     enable_virtual_key);
         }
         stat = push_heartbeat_msg(payload,strlen(payload));
         if (stat >= 0) {

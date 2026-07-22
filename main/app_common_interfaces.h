@@ -52,6 +52,7 @@ void rs232_config(void);
 void keypad_master_scan_pause_for_virtual_keypad(void);
 void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);
+void keypad_master_scan_enable_for_virtual_keypad(void);
 void payment_input_switch_update(uint8_t level);
 void keypad_password_handle_key_event(char key, bool pressed);
 bool keypad_password_is_unlocked(void);
@@ -59,6 +60,7 @@ bool keypad_password_is_unlocked(void);
 // Keypad submodule interfaces
 void virtual_keypad_init();
 void virtual_keypad_set_external_physical(bool enabled);
+bool virtual_keypad_is_enabled(void);
 void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
 void cancel_qr_money_by_vir_keypad(void *arg);

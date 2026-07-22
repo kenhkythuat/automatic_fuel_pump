@@ -73,7 +73,7 @@ static volatile int col_E_detected=0,row_E_detected=0;
 //   C1..C4 are released to Hi-Z, then resumed after the virtual key sequence.
 #define KEYPAD_COL_SCAN_ROW_HIZ_DEBUG 0
 #define KEYPAD_HIZ_PROBE_DEBUG 0
-#define KEYPAD_MASTER_SCAN_DEBUG 0
+#define KEYPAD_MASTER_SCAN_DEBUG 1
 #define KEYPAD_RAW_DEBUG 0
 #define KEYPAD_ROW_1_TEST 0
 #define KEYPAD_ROW_COUNT 5
@@ -617,6 +617,19 @@ void keypad_master_scan_disable_for_external_physical_keypad(void)
     ESP_LOGW(TAG, "Keypad master scan disabled: rows/cols Hi-Z, external physical keypad only");
 #else
     ESP_LOGD(TAG, "Keypad master scan disable ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
+#endif
+}
+
+void keypad_master_scan_enable_for_virtual_keypad(void)
+{
+#if KEYPAD_MASTER_SCAN_DEBUG
+    keypad_master_scan_external_physical_mode = false;
+    keypad_master_scan_paused = false;
+    keypad_master_scan_set_rows_input(true);
+    keypad_master_scan_set_columns_output();
+    ESP_LOGW(TAG, "Keypad master scan enabled for ESP32 virtual keypad mode");
+#else
+    ESP_LOGD(TAG, "Keypad master scan enable ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
 #endif
 }
 

@@ -32,6 +32,30 @@ The device subscribes to its `.../command` topic and publishes on the other thre
   "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
 }
 ```
+### Set change the price
+```json
+{
+  "cmd": "set_price",
+  "param": { "price": 50000 },
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
+}
+```
+### Set enable virtual key
+```json
+{
+  "cmd": "enable_virtual_key",
+  "param": { "enable_virtual_key": 1 },
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
+}
+ACK
+{
+  "ts": 1736900000,
+  "ack_to": "enable_virtual_key",
+  "result": "ok",
+  "msg_id": "9f1c2ab34d5e4f67a8b9c0d1e2f30011"
+}
+- Nếu "param": { "enable_virtual_key": 1 } thì phím ảo được bật, "param": { "enable_virtual_key": 0 } phím ảo tắt tức là sử dụng được phím bên ngoài bình thường
+```
 
 ### Cancel
 ```json
