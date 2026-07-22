@@ -68,6 +68,8 @@ void end_session_by_vir_keypad(void *arg);
 
 // OTA function
 void ota_update(char *url);
+void ota_start_github_version_check(void);
+void ota_mark_app_valid_after_boot(void);
 void FD_wifi_mqtt_config();
 void FD_wifi_mqtt_stop_for_config_portal(void);
 

@@ -1067,4 +1067,5 @@ void FD_wifi_mqtt_config(void)
     ESP_LOGI(TAG, "RS232 config done\n");
     xTaskCreate(push_msg_to_broker, "push_msg_to_broker", 4096, NULL, 5, NULL);
     xTaskCreate(ping_tb, "ping_tb", 4096, NULL, 5, NULL);
+    ota_start_github_version_check();
 }

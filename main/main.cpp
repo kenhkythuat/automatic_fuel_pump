@@ -30,7 +30,7 @@ extern "C"
 #define TAG "MAIN"
 
 // OTA server URL
-#define FW_URL "http://172.24.1.1:8181/atc_wifi_fw.bin"
+#define FW_URL "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/atc_wifi_fw.bin"
 #define DEFAULT_DEVICE_ID "node_000999"
 #define DEFAULT_FW_VERSION 10
 #define DEFAULT_PRICE 10000
@@ -160,6 +160,7 @@ extern "C" void app_main(void)
     }
     // readKeysFromNVS();
 
+    ota_mark_app_valid_after_boot();
     getOperationMode_version();
     if (operationMode == FUEL_DISPENSER_MODE) // run fuel dispenser app
     {
