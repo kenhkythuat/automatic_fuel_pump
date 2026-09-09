@@ -38,6 +38,12 @@
 #define TBMQ_TOPIC_MAX_LEN 128
 #define VIRTUAL_KEYPAD_TASK_STACK_SIZE 6144
 
+typedef enum {
+    PAYMENT_COMMAND_NONE = 0,
+    PAYMENT_COMMAND_MONEY,
+    PAYMENT_COMMAND_LITTER,
+} payment_command_type_t;
+
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 //extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
@@ -53,7 +59,10 @@ static char tbmq_telemetry_topic[TBMQ_TOPIC_MAX_LEN];
 static char tbmq_ack_topic[TBMQ_TOPIC_MAX_LEN];
 static char tbmq_event_topic[TBMQ_TOPIC_MAX_LEN];
 static char active_payment_msg_id[TBMQ_MSG_ID_LEN + 1];
+static payment_command_type_t active_payment_type;
 static uint32_t active_payment_money;
+static uint32_t active_payment_litter;
+static bool active_payment_active;
 static bool active_payment_has_msg_id;
 static bool active_payment_input_started;
 static bool active_payment_money_keypad_done;
@@ -239,19 +248,27 @@ static bool parse_protocol_msg_id(const cJSON *root, char *msg_id_out, size_t ms
     return true;
 }
 
-static void set_active_payment_context(const char *msg_id, uint32_t money)
+static void set_active_payment_context(const char *msg_id,
+                                       payment_command_type_t type,
+                                       uint32_t money,
+                                       uint32_t litter)
 {
-    if (msg_id == NULL) {
-        return;
-    }
-
     if (payment_ctx_sem != NULL) {
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    snprintf(active_payment_msg_id, sizeof(active_payment_msg_id), "%s", msg_id);
+    if (msg_id != NULL && msg_id[0] != '\0') {
+        snprintf(active_payment_msg_id, sizeof(active_payment_msg_id), "%s", msg_id);
+        active_payment_has_msg_id = true;
+    } else {
+        active_payment_msg_id[0] = '\0';
+        active_payment_has_msg_id = false;
+    }
+
+    active_payment_type = type;
     active_payment_money = money;
-    active_payment_has_msg_id = true;
+    active_payment_litter = litter;
+    active_payment_active = true;
     active_payment_input_started = false;
     active_payment_money_keypad_done = !virtual_keypad_is_enabled();
 
@@ -284,17 +301,21 @@ static bool get_active_payment_msg_id(char *msg_id_out, size_t msg_id_out_size)
     return has_msg_id;
 }
 
-static void clear_active_payment_msg_id(const char *completed_msg_id)
+static void clear_active_payment_context(const char *completed_msg_id)
 {
     if (payment_ctx_sem != NULL) {
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    if (active_payment_has_msg_id &&
+    if (active_payment_active &&
         (completed_msg_id == NULL ||
+         !active_payment_has_msg_id ||
          strcmp(active_payment_msg_id, completed_msg_id) == 0)) {
         active_payment_msg_id[0] = '\0';
+        active_payment_type = PAYMENT_COMMAND_NONE;
         active_payment_money = 0;
+        active_payment_litter = 0;
+        active_payment_active = false;
         active_payment_has_msg_id = false;
         active_payment_input_started = false;
         active_payment_money_keypad_done = false;
@@ -317,7 +338,7 @@ bool payment_control_switch_can_follow_input(void)
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    can_follow = active_payment_has_msg_id && active_payment_money_keypad_done;
+    can_follow = active_payment_active && active_payment_money_keypad_done;
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
@@ -334,11 +355,12 @@ void payment_set_qr_money_keypad_done(void)
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    if (active_payment_has_msg_id) {
+    if (active_payment_active) {
         active_payment_money_keypad_done = true;
         should_refresh_control = true;
-        ESP_LOGI(TAG, "set_qr_money virtual keypad done, control switch can follow input now msg_id=%s",
-                 active_payment_msg_id);
+        ESP_LOGI(TAG, "%s virtual keypad done, control switch can follow input now msg_id=%s",
+                 active_payment_type == PAYMENT_COMMAND_LITTER ? "set_qr_litter" : "set_qr_money",
+                 active_payment_has_msg_id ? active_payment_msg_id : "");
     }
 
     if (payment_ctx_sem != NULL) {
@@ -411,6 +433,24 @@ static bool parse_qr_amount_item(const cJSON *item, char *amount_buf, size_t amo
     snprintf(amount_buf, amount_buf_size, "%lu", (unsigned long)keypad_amount);
     if (raw_amount_value != NULL) {
         *raw_amount_value = raw_amount;
+    }
+    return true;
+}
+
+static bool parse_qr_litter_item(const cJSON *item, char *litter_buf, size_t litter_buf_size, uint32_t *raw_litter_value)
+{
+    char raw_litter_buf[16];
+    uint32_t raw_litter = 0;
+    uint32_t keypad_litter = 0;
+
+    if (!parse_number_item(item, raw_litter_buf, sizeof(raw_litter_buf), UINT32_MAX / 10, &raw_litter)) {
+        return false;
+    }
+
+    keypad_litter = raw_litter * 10;
+    snprintf(litter_buf, litter_buf_size, "%lu", (unsigned long)keypad_litter);
+    if (raw_litter_value != NULL) {
+        *raw_litter_value = raw_litter;
     }
     return true;
 }
@@ -542,6 +582,10 @@ static void handle_payment_command(const cJSON *root)
     const char *cmd = cmd_item->valuestring;
     msg_id_valid = parse_protocol_msg_id(root, msg_id, sizeof(msg_id));
     if (!msg_id_valid) {
+        msg_id[0] = '\0';
+    }
+
+    if (!msg_id_valid) {
         ESP_LOGE(TAG, "%s is missing/invalid required msg_id", cmd);
         publish_payment_ack(cmd, "error", "missing_or_invalid_msg_id", NULL);
         return;
@@ -646,12 +690,60 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
-        set_active_payment_context(msg_id, qr_money);
+        set_active_payment_context(msg_id,
+                                   PAYMENT_COMMAND_MONEY,
+                                   qr_money,
+                                   0);
         ESP_LOGI(TAG,
                  "Payment command accepted: cmd=%s qr_money=%lu keypad=%s msg_id=%s",
                  cmd,
                  (unsigned long)qr_money,
                  amount_buf,
+                 msg_id);
+        publish_payment_ack(cmd, "ok", NULL, msg_id);
+        return;
+    }
+
+    if (strcmp(cmd, "set_qr_litter") == 0) {
+        const cJSON *qr_litter_item = cJSON_GetObjectItemCaseSensitive(param, "qr_litter");
+        char litter_buf[16];
+        uint32_t qr_litter = 0;
+
+        if (!parse_qr_litter_item(qr_litter_item, litter_buf, sizeof(litter_buf), &qr_litter)) {
+            ESP_LOGE(TAG, "Invalid param.qr_litter");
+            publish_payment_ack(cmd, "error", "fail_config_litter", msg_id);
+            return;
+        }
+
+        char *task_litter = strdup(litter_buf);
+        if (task_litter == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate QR litter task parameter");
+            publish_payment_ack(cmd, "error", "fail_config_litter", msg_id);
+            return;
+        }
+
+        BaseType_t task_created = xTaskCreate(enter_qr_litter_by_vir_keypad,
+                                              "enter_qr_litter",
+                                              VIRTUAL_KEYPAD_TASK_STACK_SIZE,
+                                              task_litter,
+                                              configMAX_PRIORITIES - 1,
+                                              NULL);
+        if (task_created != pdPASS) {
+            free(task_litter);
+            ESP_LOGE(TAG, "Failed to create QR litter keypad task");
+            publish_payment_ack(cmd, "error", "fail_config_litter", msg_id);
+            return;
+        }
+
+        set_active_payment_context(msg_id,
+                                   PAYMENT_COMMAND_LITTER,
+                                   0,
+                                   qr_litter);
+        ESP_LOGI(TAG,
+                 "Payment command accepted: cmd=%s qr_litter=%lu keypad=%s msg_id=%s",
+                 cmd,
+                 (unsigned long)qr_litter,
+                 litter_buf,
                  msg_id);
         publish_payment_ack(cmd, "ok", NULL, msg_id);
         return;
@@ -685,7 +777,7 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
-        clear_active_payment_msg_id(msg_id);
+        clear_active_payment_context(msg_id);
         ESP_LOGI(TAG, "Payment command accepted: cmd=%s msg_id=%s", cmd, msg_id);
         publish_payment_ack(cmd, "ok", NULL, msg_id);
         return;
@@ -986,9 +1078,12 @@ void payment_input_switch_update(uint8_t level)
 {
     char completed_msg_id[TBMQ_MSG_ID_LEN + 1];
     char completion_payload[224];
+    payment_command_type_t completed_type = PAYMENT_COMMAND_NONE;
     uint32_t completed_money = 0;
+    uint32_t completed_litter = 0;
     uint16_t completed_price = 0;
     bool has_payment = false;
+    bool has_completed_msg_id = false;
     bool should_publish_completion = false;
 
     completed_msg_id[0] = '\0';
@@ -997,15 +1092,21 @@ void payment_input_switch_update(uint8_t level)
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    has_payment = active_payment_has_msg_id;
+    has_payment = active_payment_active;
     if (has_payment) {
-        snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
+        completed_type = active_payment_type;
+        has_completed_msg_id = active_payment_has_msg_id;
+        if (has_completed_msg_id) {
+            snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
+        }
         completed_money = active_payment_money;
+        completed_litter = active_payment_litter;
         completed_price = u16CurPrice;
 
         if (level != 0) {
             if (!active_payment_input_started) {
-                ESP_LOGI(TAG, "Payment input switch ACTIVE: dispense started msg_id=%s",
+                ESP_LOGI(TAG, "Payment input switch ACTIVE: dispense started type=%d msg_id=%s",
+                         completed_type,
                          completed_msg_id);
             }
             active_payment_input_started = true;
@@ -1020,7 +1121,7 @@ void payment_input_switch_update(uint8_t level)
     }
 
     if (!has_payment) {
-        ESP_LOGD(TAG, "Payment input switch level=%u ignored: no active set_qr_money",
+        ESP_LOGD(TAG, "Payment input switch level=%u ignored: no active set_qr_money/set_qr_litter",
                  level);
         return;
     }
@@ -1035,17 +1136,36 @@ void payment_input_switch_update(uint8_t level)
         return;
     }
 
-    snprintf(completion_payload,
-             sizeof(completion_payload),
-             "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"price\":%u}",
-             protocol_timestamp_seconds(),
-             completed_msg_id,
-             (unsigned long)completed_money,
-             (unsigned int)completed_price);
+    if (completed_type == PAYMENT_COMMAND_LITTER) {
+        if (has_completed_msg_id) {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"liter\":%lu,\"price\":%u}",
+                     protocol_timestamp_seconds(),
+                     completed_msg_id,
+                     (unsigned long)completed_litter,
+                     (unsigned int)completed_price);
+        } else {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"liter\":%lu,\"price\":%u}",
+                     protocol_timestamp_seconds(),
+                     (unsigned long)completed_litter,
+                     (unsigned int)completed_price);
+        }
+    } else {
+        snprintf(completion_payload,
+                 sizeof(completion_payload),
+                 "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"price\":%u}",
+                 protocol_timestamp_seconds(),
+                 completed_msg_id,
+                 (unsigned long)completed_money,
+                 (unsigned int)completed_price);
+    }
     ESP_LOGI(TAG, "Payment completed by INPUT_SWITCH GPIO6, payload=%s", completion_payload);
     int stat = push_completion_event(completion_payload, strlen(completion_payload));
     ESP_LOGI(TAG, "completion event publish stat=%d", stat);
-    clear_active_payment_msg_id(completed_msg_id);
+    clear_active_payment_context(has_completed_msg_id ? completed_msg_id : NULL);
 }
 
 static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {

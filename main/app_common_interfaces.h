@@ -78,6 +78,7 @@ bool virtual_keypad_is_enabled(void);
 bool virtual_keypad_is_external_physical_enabled(void);
 void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
+void enter_qr_litter_by_vir_keypad(void *arg);
 void cancel_qr_money_by_vir_keypad(void *arg);
 void end_session_by_vir_keypad(void *arg);
 

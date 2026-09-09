@@ -446,6 +446,26 @@ void enter_qr_price_by_vir_keypad(void *arg)
     vTaskDelete(NULL);
 }
 
+void enter_qr_litter_by_vir_keypad(void *arg)
+{
+    char *litter = (char *)arg;
+
+    virtual_keypad_sequence_begin("enter_qr_litter");
+    ESP_LOGI(TAG, "QR litter input start: %s", litter);
+
+    press_key('C');
+    press_key('L');
+    vTaskDelay(pdMS_TO_TICKS(700));
+    press_key_string(litter);
+    press_key('E');
+
+    ESP_LOGI(TAG, "QR litter input completed.\n\n");
+    virtual_keypad_sequence_end("enter_qr_litter");
+    payment_set_qr_money_keypad_done();
+    free(litter);
+    vTaskDelete(NULL);
+}
+
 void cancel_qr_money_by_vir_keypad(void *arg)
 {
     (void)arg;
