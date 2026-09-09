@@ -33,13 +33,9 @@
 
 #define TBMQ_BROKER_URI "mqtt://161.248.146.170:1883"
 #define TBMQ_PASSWORD "123456789"
-#define TBMQ_CLIENT_ID "node_qr_001"
-#define TBMQ_COMMAND_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/command"
-#define TBMQ_TELEMETRY_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/telemetry"
-#define TBMQ_ACK_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/ack"
-#define TBMQ_EVENT_TOPIC "tbmq/payment/gw_pay_001/node_pay_001/event"
 #define TBMQ_KEEPALIVE_SEC 60
 #define TBMQ_MSG_ID_LEN 32
+#define TBMQ_TOPIC_MAX_LEN 128
 #define VIRTUAL_KEYPAD_TASK_STACK_SIZE 6144
 
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
@@ -52,14 +48,85 @@ static SemaphoreHandle_t payment_ctx_sem;
 static esp_mqtt_client_handle_t client;
 static bool mqtt_connected;
 static char mqtt_client_id[96];
+static char tbmq_command_topic[TBMQ_TOPIC_MAX_LEN];
+static char tbmq_telemetry_topic[TBMQ_TOPIC_MAX_LEN];
+static char tbmq_ack_topic[TBMQ_TOPIC_MAX_LEN];
+static char tbmq_event_topic[TBMQ_TOPIC_MAX_LEN];
 static char active_payment_msg_id[TBMQ_MSG_ID_LEN + 1];
+static uint32_t active_payment_money;
 static bool active_payment_has_msg_id;
 static bool active_payment_input_started;
+static bool active_payment_money_keypad_done;
 cJSON *json_obj;
 char payload[512];
 //int currentPrice=0;
 
 static int publish_to_tbmq(const char *topic, const char *msg_payload, uint16_t msg_len);
+
+static const char *safe_gw_pay_id(void)
+{
+    return (gwPayID != NULL && gwPayID[0] != '\0') ? gwPayID : "gw_pay_001";
+}
+
+static const char *safe_device_id(void)
+{
+    return (deviceID != NULL && deviceID[0] != '\0') ? deviceID : "node_pay_001";
+}
+
+static const char *safe_mqtt_client_id(void)
+{
+    return (mqttClientID != NULL && mqttClientID[0] != '\0') ? mqttClientID : "node_qr_001";
+}
+
+static bool build_tbmq_topics(void)
+{
+    const char *gw_id = safe_gw_pay_id();
+    const char *node_id = safe_device_id();
+    int ret;
+
+    ret = snprintf(tbmq_command_topic,
+                   sizeof(tbmq_command_topic),
+                   "tbmq/payment/%s/%s/command",
+                   gw_id,
+                   node_id);
+    if (ret < 0 || ret >= (int)sizeof(tbmq_command_topic)) {
+        return false;
+    }
+
+    ret = snprintf(tbmq_telemetry_topic,
+                   sizeof(tbmq_telemetry_topic),
+                   "tbmq/payment/%s/%s/telemetry",
+                   gw_id,
+                   node_id);
+    if (ret < 0 || ret >= (int)sizeof(tbmq_telemetry_topic)) {
+        return false;
+    }
+
+    ret = snprintf(tbmq_ack_topic,
+                   sizeof(tbmq_ack_topic),
+                   "tbmq/payment/%s/%s/ack",
+                   gw_id,
+                   node_id);
+    if (ret < 0 || ret >= (int)sizeof(tbmq_ack_topic)) {
+        return false;
+    }
+
+    ret = snprintf(tbmq_event_topic,
+                   sizeof(tbmq_event_topic),
+                   "tbmq/payment/%s/%s/event",
+                   gw_id,
+                   node_id);
+    if (ret < 0 || ret >= (int)sizeof(tbmq_event_topic)) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "TBMQ topics: command=%s telemetry=%s ack=%s event=%s",
+             tbmq_command_topic,
+             tbmq_telemetry_topic,
+             tbmq_ack_topic,
+             tbmq_event_topic);
+    return true;
+}
 
 static void log_error_if_nonzero(const char * message, int error_code)
 {
@@ -172,7 +239,7 @@ static bool parse_protocol_msg_id(const cJSON *root, char *msg_id_out, size_t ms
     return true;
 }
 
-static void set_active_payment_msg_id(const char *msg_id)
+static void set_active_payment_context(const char *msg_id, uint32_t money)
 {
     if (msg_id == NULL) {
         return;
@@ -183,8 +250,10 @@ static void set_active_payment_msg_id(const char *msg_id)
     }
 
     snprintf(active_payment_msg_id, sizeof(active_payment_msg_id), "%s", msg_id);
+    active_payment_money = money;
     active_payment_has_msg_id = true;
     active_payment_input_started = false;
+    active_payment_money_keypad_done = !virtual_keypad_is_enabled();
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
@@ -225,12 +294,59 @@ static void clear_active_payment_msg_id(const char *completed_msg_id)
         (completed_msg_id == NULL ||
          strcmp(active_payment_msg_id, completed_msg_id) == 0)) {
         active_payment_msg_id[0] = '\0';
+        active_payment_money = 0;
         active_payment_has_msg_id = false;
         active_payment_input_started = false;
+        active_payment_money_keypad_done = false;
     }
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
+    }
+}
+
+bool payment_control_switch_can_follow_input(void)
+{
+    bool can_follow = true;
+
+    if (!virtual_keypad_is_enabled()) {
+        return true;
+    }
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    }
+
+    can_follow = active_payment_has_msg_id && active_payment_money_keypad_done;
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreGive(payment_ctx_sem);
+    }
+
+    return can_follow;
+}
+
+void payment_set_qr_money_keypad_done(void)
+{
+    bool should_refresh_control = false;
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    }
+
+    if (active_payment_has_msg_id) {
+        active_payment_money_keypad_done = true;
+        should_refresh_control = true;
+        ESP_LOGI(TAG, "set_qr_money virtual keypad done, control switch can follow input now msg_id=%s",
+                 active_payment_msg_id);
+    }
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreGive(payment_ctx_sem);
+    }
+
+    if (should_refresh_control) {
+        input_switch_refresh_control_switch();
     }
 }
 
@@ -287,7 +403,11 @@ static bool parse_qr_amount_item(const cJSON *item, char *amount_buf, size_t amo
         return false;
     }
 
+#if MAIN_RS232
+    keypad_amount = raw_amount;
+#else
     keypad_amount = raw_amount / 100;
+#endif
     snprintf(amount_buf, amount_buf_size, "%lu", (unsigned long)keypad_amount);
     if (raw_amount_value != NULL) {
         *raw_amount_value = raw_amount;
@@ -364,7 +484,46 @@ static void publish_payment_ack(const char *cmd, const char *result, const char 
                  result);
     }
 
-    publish_to_tbmq(TBMQ_ACK_TOPIC, ack_payload, strlen(ack_payload));
+    publish_to_tbmq(tbmq_ack_topic, ack_payload, strlen(ack_payload));
+}
+
+static esp_err_t start_change_price_sequence(const char *price_buf, uint16_t new_price, bool *changed)
+{
+    char *task_price = NULL;
+
+    if (changed != NULL) {
+        *changed = false;
+    }
+
+    ESP_LOGI(TAG, "Price request received: old=%u new=%u", u16CurPrice, new_price);
+
+    task_price = strdup(price_buf);
+    if (task_price == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate price task parameter");
+        return ESP_ERR_NO_MEM;
+    }
+
+    BaseType_t task_created = xTaskCreate(change_price_by_vir_keypad,
+                                          "change_price_by_vir_keypad",
+                                          VIRTUAL_KEYPAD_TASK_STACK_SIZE,
+                                          task_price,
+                                          configMAX_PRIORITIES - 1,
+                                          NULL);
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create change price task");
+        free(task_price);
+        return ESP_FAIL;
+    }
+
+    u16CurPrice = new_price;
+    setNewPrice(u16CurPrice);
+    ESP_LOGI(TAG, "Change price task created for price %s", price_buf);
+
+    if (changed != NULL) {
+        *changed = true;
+    }
+
+    return ESP_OK;
 }
 
 static void handle_payment_command(const cJSON *root)
@@ -424,6 +583,38 @@ static void handle_payment_command(const cJSON *root)
         return;
     }
 
+    if (strcmp(cmd, "set_price") == 0) {
+        const cJSON *price_item = cJSON_GetObjectItemCaseSensitive(param, "price");
+        char price_buf[16];
+        uint16_t new_price = 0;
+        bool price_changed = false;
+        esp_err_t err;
+
+        if (!parse_price_item(price_item, price_buf, sizeof(price_buf), &new_price)) {
+            ESP_LOGE(TAG, "Invalid param.price");
+            publish_payment_ack(cmd, "error", "invalid price", msg_id);
+            return;
+        }
+
+        err = start_change_price_sequence(price_buf, new_price, &price_changed);
+        if (err != ESP_OK) {
+            publish_payment_ack(cmd,
+                                "error",
+                                err == ESP_ERR_NO_MEM ? "out of memory" : "task create failed",
+                                msg_id);
+            return;
+        }
+
+        ESP_LOGI(TAG,
+                 "Payment command accepted: cmd=%s price=%u changed=%d msg_id=%s",
+                 cmd,
+                 new_price,
+                 price_changed ? 1 : 0,
+                 msg_id);
+        publish_payment_ack(cmd, "ok", NULL, msg_id);
+        return;
+    }
+
     if (strcmp(cmd, "set_qr_money") == 0) {
         const cJSON *qr_money_item = cJSON_GetObjectItemCaseSensitive(param, "qr_money");
         char amount_buf[16];
@@ -455,7 +646,7 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
-        set_active_payment_msg_id(msg_id);
+        set_active_payment_context(msg_id, qr_money);
         ESP_LOGI(TAG,
                  "Payment command accepted: cmd=%s qr_money=%lu keypad=%s msg_id=%s",
                  cmd,
@@ -524,8 +715,8 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             mqtt_connected = true;
             xEventGroupSetBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
-            msg_id = esp_mqtt_client_subscribe(client, TBMQ_COMMAND_TOPIC, 1);
-            ESP_LOGI(TAG, "subscribe to topic: %s QoS=1, msg_id=%d", TBMQ_COMMAND_TOPIC, msg_id);
+            msg_id = esp_mqtt_client_subscribe(client, tbmq_command_topic, 1);
+            ESP_LOGI(TAG, "subscribe to topic: %s QoS=1, msg_id=%d", tbmq_command_topic, msg_id);
 
             // subcribe to data topic QoS0
             msg_id = esp_mqtt_client_subscribe(client, tb_topic_endsession, 0);
@@ -567,7 +758,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                 break;
             }
 
-            if (topic_matches(event, TBMQ_COMMAND_TOPIC)) {
+            if (topic_matches(event, tbmq_command_topic)) {
                 handle_payment_command(json_obj);
                 cJSON_Delete(json_obj);
                 json_obj = NULL;
@@ -579,7 +770,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             {
                 char price_buf[16];
                 uint16_t new_price = 0;
-                char *task_price = NULL;
+                esp_err_t price_err;
 
                 if (!parse_price_item(cJSON_GetObjectItem(json_obj, "price"), price_buf, sizeof(price_buf), &new_price)) {
                     ESP_LOGE(TAG, "Invalid price value");
@@ -587,38 +778,10 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
                     break;
                 }
 
-                ESP_LOGI(TAG, "Price request received: old=%u new=%u", u16CurPrice, new_price);
-                if(new_price != u16CurPrice)
-                {                    
-                    task_price = (char *)malloc(strlen(price_buf) + 1);
-                    if (task_price == NULL) {
-                        ESP_LOGE(TAG, "Failed to allocate price task parameter");
-                        cJSON_Delete(json_obj);
-                        break;
-                    }
-                    strcpy(task_price, price_buf);
-
-                    // Send new price to device via simulated keypad
-                    BaseType_t task_created = xTaskCreate(&change_price_by_vir_keypad,
-                                                          "change_price_by_vir_keypad",
-                                                          VIRTUAL_KEYPAD_TASK_STACK_SIZE,
-                                                          task_price,
-                                                          configMAX_PRIORITIES-1,
-                                                          NULL);
-                    if (task_created != pdPASS) {
-                        ESP_LOGE(TAG, "Failed to create change price task");
-                        free(task_price);
-                        cJSON_Delete(json_obj);
-                        break;
-                    }
-
-                    // Update current price in RAM/NVS after the keypad task was accepted.
-                    u16CurPrice = new_price;
-                    setNewPrice(u16CurPrice);
-                    ESP_LOGI(TAG, "Change price task created for price %s", price_buf);
-                }
-                else {
-                    ESP_LOGI(TAG, "Price is unchanged, keypad sequence skipped");
+                price_err = start_change_price_sequence(price_buf, new_price, NULL);
+                if (price_err != ESP_OK) {
+                    cJSON_Delete(json_obj);
+                    break;
                 }
                 u8_subscribed=true;
             }
@@ -728,7 +891,15 @@ static void FD_mqtt_event_handler(void *handler_args, esp_event_base_t base, int
 }
 static void FD_mqtt_app_start(void)
 {
-    int client_id_len = snprintf(mqtt_client_id, sizeof(mqtt_client_id), "%s", TBMQ_CLIENT_ID);
+    if (!build_tbmq_topics()) {
+        ESP_LOGE(TAG, "Failed to build TBMQ topics from gwPayID/deviceID");
+        return;
+    }
+
+    int client_id_len = snprintf(mqtt_client_id,
+                                 sizeof(mqtt_client_id),
+                                 "%s",
+                                 safe_mqtt_client_id());
     if (client_id_len < 0 || client_id_len >= (int)sizeof(mqtt_client_id)) {
         ESP_LOGE(TAG, "MQTT client ID is invalid or too long");
         return;
@@ -798,7 +969,7 @@ static int publish_to_tbmq(const char *topic, const char *msg_payload, uint16_t 
 static int push_msg(char *msg_payload, uint16_t msg_len) {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = publish_to_tbmq(TBMQ_TELEMETRY_TOPIC, msg_payload, msg_len);
+    stat = publish_to_tbmq(tbmq_telemetry_topic, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -806,7 +977,7 @@ static int push_msg(char *msg_payload, uint16_t msg_len) {
 static int push_completion_event(char *msg_payload, uint16_t msg_len) {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = publish_to_tbmq(TBMQ_EVENT_TOPIC, msg_payload, msg_len);
+    stat = publish_to_tbmq(tbmq_event_topic, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -814,7 +985,9 @@ static int push_completion_event(char *msg_payload, uint16_t msg_len) {
 void payment_input_switch_update(uint8_t level)
 {
     char completed_msg_id[TBMQ_MSG_ID_LEN + 1];
-    char completion_payload[160];
+    char completion_payload[224];
+    uint32_t completed_money = 0;
+    uint16_t completed_price = 0;
     bool has_payment = false;
     bool should_publish_completion = false;
 
@@ -827,6 +1000,8 @@ void payment_input_switch_update(uint8_t level)
     has_payment = active_payment_has_msg_id;
     if (has_payment) {
         snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
+        completed_money = active_payment_money;
+        completed_price = u16CurPrice;
 
         if (level != 0) {
             if (!active_payment_input_started) {
@@ -862,9 +1037,11 @@ void payment_input_switch_update(uint8_t level)
 
     snprintf(completion_payload,
              sizeof(completion_payload),
-             "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\"}",
+             "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"price\":%u}",
              protocol_timestamp_seconds(),
-             completed_msg_id);
+             completed_msg_id,
+             (unsigned long)completed_money,
+             (unsigned int)completed_price);
     ESP_LOGI(TAG, "Payment completed by INPUT_SWITCH GPIO6, payload=%s", completion_payload);
     int stat = push_completion_event(completion_payload, strlen(completion_payload));
     ESP_LOGI(TAG, "completion event publish stat=%d", stat);
@@ -874,7 +1051,7 @@ void payment_input_switch_update(uint8_t level)
 static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = publish_to_tbmq(TBMQ_ACK_TOPIC, msg_payload, msg_len);
+    stat = publish_to_tbmq(tbmq_ack_topic, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -885,7 +1062,7 @@ static int push_heartbeat_msg(char *msg_payload, uint16_t msg_len)
 {
     int stat;
     xSemaphoreTake(push_msg_sem, portMAX_DELAY);
-    stat = publish_to_tbmq(TBMQ_TELEMETRY_TOPIC, msg_payload, msg_len);
+    stat = publish_to_tbmq(tbmq_telemetry_topic, msg_payload, msg_len);
     xSemaphoreGive(push_msg_sem);
     return stat;
 }
@@ -1006,7 +1183,7 @@ static void ping_tb(void *arg) {
         if (get_active_payment_msg_id(payment_msg_id, sizeof(payment_msg_id))) {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u}",
+                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u}",
                      protocol_timestamp_seconds(),
                      payment_msg_id,
                      deviceID,
@@ -1014,18 +1191,20 @@ static void ping_tb(void *arg) {
                      1,
                      ap.rssi,
                      enable_virtual_key,
-                     (unsigned int)u8FwVerion);
+                     (unsigned int)u8FwVerion,
+                     (unsigned int)u16CurPrice);
         } else {
             snprintf(payload,
                      sizeof(payload),
-                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u}",
+                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u}",
                      protocol_timestamp_seconds(),
                      deviceID,
                      "diesel",
                      1,
                      ap.rssi,
                      enable_virtual_key,
-                     (unsigned int)u8FwVerion);
+                     (unsigned int)u8FwVerion,
+                     (unsigned int)u16CurPrice);
         }
         stat = push_heartbeat_msg(payload,strlen(payload));
         if (stat >= 0) {

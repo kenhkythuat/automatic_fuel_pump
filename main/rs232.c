@@ -580,19 +580,14 @@ static void keypad_master_scan_set_columns_output(void)
 
 void keypad_master_scan_pause_for_virtual_keypad(void)
 {
-#if KEYPAD_MASTER_SCAN_DEBUG
     keypad_master_scan_paused = true;
     keypad_master_scan_set_rows_input(false);
     keypad_master_scan_set_columns_hiz();
     ESP_LOGW(TAG, "Keypad master scan paused: rows/cols Hi-Z for virtual keypad");
-#else
-    ESP_LOGD(TAG, "Keypad master scan pause ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
-#endif
 }
 
 void keypad_master_scan_resume_after_virtual_keypad(void)
 {
-#if KEYPAD_MASTER_SCAN_DEBUG
     if (keypad_master_scan_external_physical_mode) {
         ESP_LOGW(TAG, "Keypad master scan resume skipped: external physical keypad mode");
         return;
@@ -602,35 +597,24 @@ void keypad_master_scan_resume_after_virtual_keypad(void)
     keypad_master_scan_set_columns_output();
     keypad_master_scan_paused = false;
     ESP_LOGW(TAG, "Keypad master scan resumed: rows pulldown, C1..C4 output scan enabled");
-#else
-    ESP_LOGD(TAG, "Keypad master scan resume ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
-#endif
 }
 
 void keypad_master_scan_disable_for_external_physical_keypad(void)
 {
-#if KEYPAD_MASTER_SCAN_DEBUG
     keypad_master_scan_external_physical_mode = true;
     keypad_master_scan_paused = true;
     keypad_master_scan_set_rows_input(false);
     keypad_master_scan_set_columns_hiz();
     ESP_LOGW(TAG, "Keypad master scan disabled: rows/cols Hi-Z, external physical keypad only");
-#else
-    ESP_LOGD(TAG, "Keypad master scan disable ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
-#endif
 }
 
 void keypad_master_scan_enable_for_virtual_keypad(void)
 {
-#if KEYPAD_MASTER_SCAN_DEBUG
     keypad_master_scan_external_physical_mode = false;
     keypad_master_scan_paused = false;
     keypad_master_scan_set_rows_input(true);
     keypad_master_scan_set_columns_output();
     ESP_LOGW(TAG, "Keypad master scan enabled for ESP32 virtual keypad mode");
-#else
-    ESP_LOGD(TAG, "Keypad master scan enable ignored: KEYPAD_MASTER_SCAN_DEBUG=0");
-#endif
 }
 
 static void keypad_master_scan_task(void *arg)
@@ -954,18 +938,41 @@ static void IRAM_ATTR input_switch_isr_handler(void *arg)
     }
 }
 
+static void input_switch_apply_control_level(uint8_t input_level, const char *reason)
+{
+    uint8_t control_level = input_level;
+
+    if (input_level != 0 && !payment_control_switch_can_follow_input()) {
+        control_level = 0;
+        ESP_LOGW(TAG,
+                 "CONTROL_SWITCH GPIO%d gated OFF while INPUT_SWITCH=%u: waiting set_qr_money virtual keypad done",
+                 CONTROL_SWITCH_PIN,
+                 input_level);
+    }
+
+    gpio_set_level(CONTROL_SWITCH_PIN, control_level);
+    ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d set=%u (%s, input=%u)",
+             CONTROL_SWITCH_PIN,
+             control_level,
+             reason,
+             input_level);
+}
+
+void input_switch_refresh_control_switch(void)
+{
+    uint8_t current_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
+    input_switch_apply_control_level(current_level, "refresh");
+}
+
 static void input_switch_task(void *arg)
 {
     (void)arg;
     uint8_t last_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
     uint8_t queued_level = last_level;
 
-    gpio_set_level(CONTROL_SWITCH_PIN, last_level);
+    input_switch_apply_control_level(last_level, "initial");
     ESP_LOGI(TAG, "INPUT_SWITCH GPIO%d initial=%u",
              INPUT_SWITCH_PIN,
-             last_level);
-    ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d initial=%u",
-             CONTROL_SWITCH_PIN,
              last_level);
 
     for (;;) {
@@ -990,10 +997,7 @@ static void input_switch_task(void *arg)
                  last_level,
                  current_level,
                  current_level ? "ACTIVE" : "IDLE");
-        gpio_set_level(CONTROL_SWITCH_PIN, current_level);
-        ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d set=%u",
-                 CONTROL_SWITCH_PIN,
-                 current_level);
+        input_switch_apply_control_level(current_level, "input_edge");
         ESP_LOGI(TAG, "INPUT_SWITCH task stack free before payment update=%u",
                  (unsigned int)uxTaskGetStackHighWaterMark(NULL));
         payment_input_switch_update(current_level);
@@ -1312,10 +1316,15 @@ void rs232_config(void)
 
 #if KEYPAD_COL_SCAN_ROW_HIZ_DEBUG
     keypad_configure_col_scan_row_hiz_debug();
-#elif KEYPAD_HIZ_PROBE_DEBUG
-    keypad_configure_hiz_probe_debug();
-#elif KEYPAD_MASTER_SCAN_DEBUG
+#elif KEYPAD_HIZ_PROBE_DEBUG || KEYPAD_MASTER_SCAN_DEBUG
     keypad_configure_master_scan_debug();
+    if (virtual_keypad_is_external_physical_enabled()) {
+        keypad_master_scan_disable_for_external_physical_keypad();
+        ESP_LOGW(TAG, "RS232 keypad restored from NVS: external physical keypad mode");
+    } else {
+        keypad_master_scan_enable_for_virtual_keypad();
+        ESP_LOGW(TAG, "RS232 keypad restored from NVS: ESP32 virtual keypad scan mode");
+    }
 #elif KEYPAD_RAW_DEBUG
     keypad_configure_raw_debug();
 #else

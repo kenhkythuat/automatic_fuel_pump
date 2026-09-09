@@ -1,11 +1,14 @@
 #include "app_common_interfaces.h"
 #include "driver/gpio.h"
+#include "nvs.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define TAG "VIR_KEYPAD"
+#define VIRTUAL_KEYPAD_NVS_NAMESPACE "nodeconfig"
+#define VIRTUAL_KEYPAD_NVS_EXTERNAL_KEY "externalKeypad"
 
 #define PIN_CHANEL_SELECT_1A 14
 #define PIN_CHANEL_SELECT_1B 13
@@ -22,16 +25,20 @@
 #define USE_EXTERNAL_PHYSICAL_KEYPAD 0
 static SemaphoreHandle_t set_price_task_sem;
 #define VIRTUAL_KEYPAD_SWEEP_TEST 0
-#define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 800
-#define VIRTUAL_KEYPAD_SWEEP_PERIOD_MS 1000
+#define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 200
+#define VIRTUAL_KEYPAD_SWEEP_PERIOD_MS 200
 #define VIRTUAL_KEYPAD_ADDR_SETTLE_MS 20
 #define VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS 120
-#define ORDER_CMD_SIZE 8
+#define ORDER_CMD_SIZE 10
+#define ALT_SET_PRICE_CMD_SIZE 8
+#define ALT_SET_PRICE_PASSWORD_SIZE 7
 #define END_SESSION_CMD_SIZE 9
 #define MAPPING_TABLE_SIZE 8
 
 static bool virtual_keypad_external_physical_enabled;
-char order[ORDER_CMD_SIZE] = {'P', '1', '2', '3', '4', '5', '6', 'E'};
+char order[ORDER_CMD_SIZE] = {'C','C','P','1', '2', '3', '4', '5', '6', 'E'};
+char alt_set_price_cmd[ALT_SET_PRICE_CMD_SIZE] = {'C','C','T', 'P', '0', '1', '2', 'E'};
+char alt_set_price_password[ALT_SET_PRICE_PASSWORD_SIZE] = {'2', '2', '2', '2', '2', '2','E'};
 char end_session[END_SESSION_CMD_SIZE] = {'T', '8', '1', '2', '3', '4', '5', '6', 'E'};
 uint8_t pin_control[8] = {14, 13, 12, 8, 16, 17, 18, 19};
 char keys[4][4] =
@@ -83,7 +90,71 @@ static void virtual_keypad_idle(void)
     gpio_set_level(PIN_CHANEL_SELECT_2C, 0);
 }
 
-void virtual_keypad_set_external_physical(bool enabled)
+static void virtual_keypad_save_external_physical(bool enabled)
+{
+    nvs_handle nvs = 0;
+    esp_err_t err = nvs_open(VIRTUAL_KEYPAD_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for keypad route: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_set_u8(nvs, VIRTUAL_KEYPAD_NVS_EXTERNAL_KEY, enabled ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save keypad route to NVS: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Saved keypad route to NVS: external=%u", enabled ? 1 : 0);
+    }
+
+    nvs_close(nvs);
+}
+
+static bool virtual_keypad_load_external_physical(bool *enabled)
+{
+    nvs_handle nvs = 0;
+    uint8_t stored_value = 0;
+    esp_err_t err;
+
+    if (enabled == NULL) {
+        return false;
+    }
+
+    err = nvs_open(VIRTUAL_KEYPAD_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for keypad route load: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = nvs_get_u8(nvs, VIRTUAL_KEYPAD_NVS_EXTERNAL_KEY, &stored_value);
+    if (err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_NVS_TYPE_MISMATCH) {
+        *enabled = (USE_EXTERNAL_PHYSICAL_KEYPAD != 0);
+        ESP_LOGW(TAG,
+                 "Keypad route not found in NVS, use default external=%u",
+                 *enabled ? 1 : 0);
+        err = nvs_set_u8(nvs, VIRTUAL_KEYPAD_NVS_EXTERNAL_KEY, *enabled ? 1 : 0);
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
+    } else if (err == ESP_OK) {
+        *enabled = (stored_value != 0);
+        ESP_LOGI(TAG, "Loaded keypad route from NVS: external=%u", *enabled ? 1 : 0);
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load/save keypad route in NVS: %s", esp_err_to_name(err));
+        nvs_close(nvs);
+        return false;
+    }
+
+    nvs_close(nvs);
+    return true;
+}
+
+static void virtual_keypad_apply_external_physical(bool enabled, bool save_to_flash)
 {
     virtual_keypad_external_physical_enabled = enabled;
     virtual_keypad_idle();
@@ -93,11 +164,25 @@ void virtual_keypad_set_external_physical(bool enabled)
              ON_OFF_VIRTUAL_KEYPAD,
              enabled ? 1 : 0,
              enabled ? "external physical keypad" : "ESP32 virtual keypad");
+
+    if (save_to_flash) {
+        virtual_keypad_save_external_physical(enabled);
+    }
+}
+
+void virtual_keypad_set_external_physical(bool enabled)
+{
+    virtual_keypad_apply_external_physical(enabled, true);
 }
 
 bool virtual_keypad_is_enabled(void)
 {
     return !virtual_keypad_external_physical_enabled;
+}
+
+bool virtual_keypad_is_external_physical_enabled(void)
+{
+    return virtual_keypad_external_physical_enabled;
 }
 
 static void psudoe_press_timed(uint8_t cluster, uint8_t pin, uint32_t press_ms, uint32_t gap_ms)
@@ -134,7 +219,7 @@ static void psudoe_press_timed(uint8_t cluster, uint8_t pin, uint32_t press_ms, 
 
 static void psudoe_press(uint8_t cluster, uint8_t pin)
 {
-    psudoe_press_timed(cluster, pin, 500, 1000);
+    psudoe_press_timed(cluster, pin, 300, 600);
 }
 
 static void press_key(char key)
@@ -164,6 +249,22 @@ static void press_key(char key)
         }
     }
     ESP_LOGW(TAG, "Unsupported virtual key: %c", key);
+}
+
+static void press_key_array(const char *keys_to_press, size_t key_count)
+{
+    for (size_t i = 0; i < key_count; i++)
+    {
+        press_key(keys_to_press[i]);
+    }
+}
+
+static void press_key_string(const char *keys_to_press)
+{
+    for (size_t i = 0; i < strlen(keys_to_press); i++)
+    {
+        press_key(keys_to_press[i]);
+    }
 }
 
 static bool press_key_timed(char key, uint32_t press_ms, uint32_t gap_ms)
@@ -271,12 +372,17 @@ static void virtual_keypad_sweep_test_task(void *arg)
 
 void virtual_keypad_init()
 {
+    bool external_physical_enabled = (USE_EXTERNAL_PHYSICAL_KEYPAD != 0);
+
     for (int i = 0; i < MAPPING_TABLE_SIZE; i++)
     {
         esp_rom_gpio_pad_select_gpio(pin_control[i]);
         gpio_set_direction(pin_control[i], GPIO_MODE_OUTPUT);
     }
-    virtual_keypad_set_external_physical(USE_EXTERNAL_PHYSICAL_KEYPAD != 0);
+
+    (void)virtual_keypad_load_external_physical(&external_physical_enabled);
+    virtual_keypad_apply_external_physical(external_physical_enabled, false);
+
     set_price_task_sem = xSemaphoreCreateBinary();
     xSemaphoreGive(set_price_task_sem);
 
@@ -296,16 +402,18 @@ void change_price_by_vir_keypad(void *arg)
 
     virtual_keypad_sequence_begin("change_price");
     // bset_price = true;
-    ESP_LOGI(TAG, "Press: ");
-    for (int i = 0; i < sizeof(order); i++)
-    {
-        press_key(order[i]);
-    }
+    ESP_LOGI(TAG, "Change price input start: price=%s mode=%s",
+             price,
+             MAIN_RS232 ? "MAIN_RS232" : "ALT_SET_PRICE");
 
-    for (int i = 0; i < strlen(price); i++)
-    {
-        press_key(price[i]);
-    }
+#if MAIN_RS232
+    press_key_array(order, sizeof(order));
+#else
+    press_key_array(alt_set_price_cmd, sizeof(alt_set_price_cmd));
+    press_key_array(alt_set_price_password, sizeof(alt_set_price_password));
+#endif
+
+    press_key_string(price);
     press_key('E'); // Press E to confirm the price
     ESP_LOGI(TAG, "Change price Session completed.\n\n");
     // bset_price = false;
@@ -324,7 +432,7 @@ void enter_qr_price_by_vir_keypad(void *arg)
     ESP_LOGI(TAG, "QR price input start: %s", amount);
 
     press_key('$');
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(700));
     for (int i = 0; i < strlen(amount); i++)
     {
         press_key(amount[i]);
@@ -333,6 +441,7 @@ void enter_qr_price_by_vir_keypad(void *arg)
 
     ESP_LOGI(TAG, "QR price input completed.\n\n");
     virtual_keypad_sequence_end("enter_qr_price");
+    payment_set_qr_money_keypad_done();
     free(amount);
     vTaskDelete(NULL);
 }

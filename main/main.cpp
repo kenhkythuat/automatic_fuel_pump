@@ -31,8 +31,10 @@ extern "C"
 
 // OTA server URL
 #define FW_URL "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/atc_wifi_fw.bin"
-#define DEFAULT_DEVICE_ID "node_000999"
-#define DEFAULT_FW_VERSION 10
+#define DEFAULT_DEVICE_ID "node_pay_001"
+#define DEFAULT_GW_PAY_ID "gw_pay_001"
+#define DEFAULT_MQTT_CLIENT_ID "node_qr_001"
+#define DEFAULT_FW_VERSION 13
 #define DEFAULT_PRICE 10000
 
 uint8_t operationMode; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE and OTA_MODE
@@ -41,6 +43,8 @@ uint8_t u8FwVerion = 0;
 uint16_t u16CurPrice = 0;
 uint8_t u8DeviceId = 0;
 char *deviceID = NULL;
+char *gwPayID = NULL;
+char *mqttClientID = NULL;
 
 QueueHandle_t uplink_queue = NULL;
 
@@ -62,6 +66,37 @@ static void nvs_set_default_str(nvs_handle handle, const char *key, const char *
 static bool nvs_needs_default(esp_err_t err)
 {
     return err == ESP_ERR_NVS_NOT_FOUND || err == ESP_ERR_NVS_TYPE_MISMATCH;
+}
+
+static char *nvs_load_or_set_default_str(nvs_handle handle,
+                                         const char *key,
+                                         const char *default_value)
+{
+    esp_err_t err;
+    size_t str_len = 0;
+    char *value = NULL;
+
+    err = nvs_get_str(handle, key, NULL, &str_len);
+    if (nvs_needs_default(err))
+    {
+        nvs_set_default_str(handle, key, default_value);
+        str_len = strlen(default_value) + 1;
+    }
+    else
+    {
+        ESP_ERROR_CHECK(err);
+    }
+
+    value = (char *)malloc(str_len);
+    if (value == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to allocate NVS string %s", key);
+        abort();
+    }
+
+    err = nvs_get_str(handle, key, value, &str_len);
+    ESP_ERROR_CHECK(err);
+    return value;
 }
 
 // get NVS values
@@ -109,28 +144,13 @@ static void getOperationMode_version()
     }
     ESP_LOGI(TAG, "Fw version %d\n", u8FwVerion);
 
-    size_t str_len = 0;
-    err = nvs_get_str(nodeconfig_hdl, "deviceId", NULL, &str_len);
-    if (nvs_needs_default(err))
-    {
-        nvs_set_default_str(nodeconfig_hdl, "deviceId", DEFAULT_DEVICE_ID);
-        str_len = sizeof(DEFAULT_DEVICE_ID);
-    }
-    else
-    {
-        ESP_ERROR_CHECK(err);
-    }
-
-    deviceID = (char *)malloc(str_len);
-    if (deviceID == NULL)
-    {
-        ESP_LOGE(TAG, "Failed to allocate deviceID");
-        abort();
-    }
-    err = nvs_get_str(nodeconfig_hdl, "deviceId", deviceID, &str_len);
-    ESP_ERROR_CHECK(err);
+    deviceID = nvs_load_or_set_default_str(nodeconfig_hdl, "deviceId", DEFAULT_DEVICE_ID);
+    gwPayID = nvs_load_or_set_default_str(nodeconfig_hdl, "gw_pay", DEFAULT_GW_PAY_ID);
+    mqttClientID = nvs_load_or_set_default_str(nodeconfig_hdl, "mqttClientId", DEFAULT_MQTT_CLIENT_ID);
     ESP_ERROR_CHECK(nvs_commit(nodeconfig_hdl));
-    printf("%s\n", deviceID);
+    ESP_LOGI(TAG, "Device ID %s", deviceID);
+    ESP_LOGI(TAG, "Gateway payment ID %s", gwPayID);
+    ESP_LOGI(TAG, "MQTT client ID %s", mqttClientID);
 
     nvs_close(nodeconfig_hdl);
 }

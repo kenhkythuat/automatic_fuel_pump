@@ -18,6 +18,15 @@
 
 #define FUEL_DISPENSER_MODE 1
 #define FW_OTA_MODE 2
+
+// 1: main RS232 fuel dispenser flow.
+//    set_qr_money is entered exactly as the server sends it.
+// 0: alternate keypad flow.
+//    set_qr_money keeps the existing scaled keypad amount behavior.
+#ifndef MAIN_RS232
+#define MAIN_RS232 1
+#endif
+
 void wifi_sta_main(void);
 //Modbus related functions
 struct fuel_para {
@@ -32,6 +41,8 @@ extern uint8_t u8FwVerion;
 extern uint16_t u16CurPrice;
 extern uint8_t u8DeviceId;
 extern char* deviceID;
+extern char* gwPayID;
+extern char* mqttClientID;
 
 // Wifi variables and function
 void wifi_main(void);
@@ -54,6 +65,9 @@ void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);
 void keypad_master_scan_enable_for_virtual_keypad(void);
 void payment_input_switch_update(uint8_t level);
+bool payment_control_switch_can_follow_input(void);
+void payment_set_qr_money_keypad_done(void);
+void input_switch_refresh_control_switch(void);
 void keypad_password_handle_key_event(char key, bool pressed);
 bool keypad_password_is_unlocked(void);
 
@@ -61,6 +75,7 @@ bool keypad_password_is_unlocked(void);
 void virtual_keypad_init();
 void virtual_keypad_set_external_physical(bool enabled);
 bool virtual_keypad_is_enabled(void);
+bool virtual_keypad_is_external_physical_enabled(void);
 void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
 void cancel_qr_money_by_vir_keypad(void *arg);

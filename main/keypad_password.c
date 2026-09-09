@@ -2,7 +2,7 @@
 
 #define TAG "KEYPAD_PASSWORD"
 
-#define KEYPAD_PASSWORD "P123456E"
+#define KEYPAD_PASSWORD "P393939E"
 
 static size_t password_index;
 static bool password_unlocked;
