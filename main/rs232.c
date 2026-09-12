@@ -1,6 +1,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "app_common_interfaces.h"
 
@@ -32,6 +35,9 @@
 #define FD_TASK_STACK_SIZE    2048
 
 #define BUF_SIZE (1024)
+
+#define RS232_RX_DEBUG 1
+#define RS232_RX_DEBUG_BYTES_PER_LINE 32
 
 
 // // old HW
@@ -190,6 +196,52 @@ const char SETUP_LITTER[5] = {0x87, 0x88, 0xa1, 0xf9, 0x88};
 const char LIFT_NOZZLE[5] = {0, 0, 0, 0, 0};
 bool user_pressed_E = false;
 
+#if RS232_RX_DEBUG
+static void rs232_rx_debug_log(const uint8_t *data, int len)
+{
+    if (data == NULL || len <= 0) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "[RS232 RX] len=%d", len);
+
+    static const char hex_digits[] = "0123456789ABCDEF";
+    char hex_line[(RS232_RX_DEBUG_BYTES_PER_LINE * 3)];
+    char ascii_line[RS232_RX_DEBUG_BYTES_PER_LINE + 1];
+
+    for (int offset = 0; offset < len; offset += RS232_RX_DEBUG_BYTES_PER_LINE) {
+        int chunk_len = len - offset;
+        if (chunk_len > RS232_RX_DEBUG_BYTES_PER_LINE) {
+            chunk_len = RS232_RX_DEBUG_BYTES_PER_LINE;
+        }
+
+        int hex_pos = 0;
+        for (int i = 0; i < chunk_len; i++) {
+            uint8_t byte = data[offset + i];
+            hex_line[hex_pos++] = hex_digits[(byte >> 4) & 0x0f];
+            hex_line[hex_pos++] = hex_digits[byte & 0x0f];
+            if (i + 1 < chunk_len) {
+                hex_line[hex_pos++] = ' ';
+            }
+            ascii_line[i] = (byte >= 0x20 && byte <= 0x7e) ? (char)byte : '.';
+        }
+        hex_line[hex_pos] = '\0';
+        ascii_line[chunk_len] = '\0';
+
+        if (len > RS232_RX_DEBUG_BYTES_PER_LINE) {
+            ESP_LOGI(TAG, "[RS232 RX HEX +%d] %s", offset, hex_line);
+            ESP_LOGI(TAG, "[RS232 RX ASCII +%d] %s", offset, ascii_line);
+        } else {
+            ESP_LOGI(TAG, "[RS232 RX HEX] %s", hex_line);
+            ESP_LOGI(TAG, "[RS232 RX ASCII] %s", ascii_line);
+        }
+    }
+}
+#define RS232_RX_DEBUG_LOG(data, len) rs232_rx_debug_log((const uint8_t *)(data), (len))
+#else
+#define RS232_RX_DEBUG_LOG(data, len) do { } while (0)
+#endif
+
 // Thread read RS232 data and send it to MQTT thread
 static void read_rs232_task(void *arg)
 {
@@ -215,15 +267,19 @@ static void read_rs232_task(void *arg)
         // Read data from the UART
         memset(atc_data, 0, 1);
         int len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
+        RS232_RX_DEBUG_LOG(atc_data, len);
         if(*atc_data == 65) { // Check 'A'
             memset(atc_data, 0, 1);
             len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
+            RS232_RX_DEBUG_LOG(atc_data, len);
             if(*atc_data == 84) { // Check 'T'
                 memset(atc_data, 0, 1);
                 len = uart_read_bytes(FD_UART_PORT_NUM, atc_data, 1, 20 / portTICK_PERIOD_MS);
+                RS232_RX_DEBUG_LOG(atc_data, len);
                 if(*atc_data == 67) { // Check 'C'
                     memset(fd_op.data, 0, 21);
                     len = uart_read_bytes(FD_UART_PORT_NUM, fd_op.data, 21, 20 / portTICK_PERIOD_MS);
+                    RS232_RX_DEBUG_LOG(fd_op.data, len);
                     // printf("byte : %d  %d  %d  %d \n", data[18], data[19], data[20],data[21]);
                     /** check byte -2 
                      * 0x44 means nozzle is not lifting
