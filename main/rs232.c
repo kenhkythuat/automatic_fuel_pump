@@ -31,13 +31,21 @@
 #define FD_RS232_CTS (UART_PIN_NO_CHANGE)
 
 #define FD_UART_PORT_NUM      2
-#define FD_UART_BAUD_RATE     4800
-#define FD_TASK_STACK_SIZE    2048
+#define FD_UART_BAUD_RATE     9600
+#define FD_TASK_STACK_SIZE    4096
 
 #define BUF_SIZE (1024)
 
 #define RS232_RX_DEBUG 1
-#define RS232_RX_DEBUG_BYTES_PER_LINE 32
+#define RS232_RX_DEBUG_HEX 0
+#define RS232_RX_DEBUG_BYTES_PER_LINE 256
+
+// 1: receive the ASCII receipt stream from UART RX GPIO11.
+//    The legacy ATC parser/state machine is bypassed; receipt parsing remains active.
+// 0: use the normal ATC protocol parser below.
+#define RS232_RX_RAW_MONITOR 1
+#define RS232_RX_RAW_BUFFER_SIZE 256
+#define RS232_RECEIPT_BUFFER_SIZE 2048
 
 
 // // old HW
@@ -205,9 +213,13 @@ static void rs232_rx_debug_log(const uint8_t *data, int len)
 
     ESP_LOGI(TAG, "[RS232 RX] len=%d", len);
 
+    // Static buffers keep the relatively large formatting storage out of the
+    // read_rs232_task stack. This function is only called by that task.
+#if RS232_RX_DEBUG_HEX
     static const char hex_digits[] = "0123456789ABCDEF";
-    char hex_line[(RS232_RX_DEBUG_BYTES_PER_LINE * 3)];
-    char ascii_line[RS232_RX_DEBUG_BYTES_PER_LINE + 1];
+    static char hex_line[(RS232_RX_DEBUG_BYTES_PER_LINE * 3)];
+#endif
+    static char ascii_line[RS232_RX_DEBUG_BYTES_PER_LINE + 1];
 
     for (int offset = 0; offset < len; offset += RS232_RX_DEBUG_BYTES_PER_LINE) {
         int chunk_len = len - offset;
@@ -215,24 +227,34 @@ static void rs232_rx_debug_log(const uint8_t *data, int len)
             chunk_len = RS232_RX_DEBUG_BYTES_PER_LINE;
         }
 
+#if RS232_RX_DEBUG_HEX
         int hex_pos = 0;
+#endif
         for (int i = 0; i < chunk_len; i++) {
             uint8_t byte = data[offset + i];
+#if RS232_RX_DEBUG_HEX
             hex_line[hex_pos++] = hex_digits[(byte >> 4) & 0x0f];
             hex_line[hex_pos++] = hex_digits[byte & 0x0f];
             if (i + 1 < chunk_len) {
                 hex_line[hex_pos++] = ' ';
             }
+#endif
             ascii_line[i] = (byte >= 0x20 && byte <= 0x7e) ? (char)byte : '.';
         }
+#if RS232_RX_DEBUG_HEX
         hex_line[hex_pos] = '\0';
+#endif
         ascii_line[chunk_len] = '\0';
 
         if (len > RS232_RX_DEBUG_BYTES_PER_LINE) {
+#if RS232_RX_DEBUG_HEX
             ESP_LOGI(TAG, "[RS232 RX HEX +%d] %s", offset, hex_line);
+#endif
             ESP_LOGI(TAG, "[RS232 RX ASCII +%d] %s", offset, ascii_line);
         } else {
+#if RS232_RX_DEBUG_HEX
             ESP_LOGI(TAG, "[RS232 RX HEX] %s", hex_line);
+#endif
             ESP_LOGI(TAG, "[RS232 RX ASCII] %s", ascii_line);
         }
     }
@@ -242,9 +264,221 @@ static void rs232_rx_debug_log(const uint8_t *data, int len)
 #define RS232_RX_DEBUG_LOG(data, len) do { } while (0)
 #endif
 
+static SemaphoreHandle_t rs232_receipt_mutex;
+static char rs232_receipt_buffer[RS232_RECEIPT_BUFFER_SIZE];
+static size_t rs232_receipt_length;
+static rs232_receipt_data_t rs232_receipt_result;
+static bool rs232_receipt_ready;
+
+static bool rs232_receipt_parse_grouped_uint(const char *label, uint32_t *value_out)
+{
+    const char *field = strstr(rs232_receipt_buffer, label);
+    const char *value_start;
+    const char *value_end;
+    uint64_t value = 0;
+    bool has_digit = false;
+
+    if (field == NULL || value_out == NULL) {
+        return false;
+    }
+
+    value_start = strchr(field + strlen(label), ':');
+    if (value_start == NULL) {
+        return false;
+    }
+    value_start++;
+
+    value_end = strchr(value_start, '(');
+    if (value_end == NULL) {
+        return false;
+    }
+
+    for (const char *cursor = value_start; cursor < value_end; cursor++) {
+        if (*cursor >= '0' && *cursor <= '9') {
+            value = (value * 10U) + (uint32_t)(*cursor - '0');
+            has_digit = true;
+            if (value > UINT32_MAX) {
+                return false;
+            }
+        }
+    }
+
+    if (!has_digit) {
+        return false;
+    }
+
+    *value_out = (uint32_t)value;
+    return true;
+}
+
+static bool rs232_receipt_parse_liter(uint32_t *milliliters_out)
+{
+    const char *field = strstr(rs232_receipt_buffer, "So lit");
+    const char *value_start;
+    const char *value_end;
+    uint64_t whole = 0;
+    uint32_t fraction = 0;
+    uint32_t fraction_digits = 0;
+    bool after_separator = false;
+    bool has_digit = false;
+
+    if (field == NULL || milliliters_out == NULL) {
+        return false;
+    }
+
+    value_start = strchr(field + strlen("So lit"), ':');
+    if (value_start == NULL) {
+        return false;
+    }
+    value_start++;
+
+    value_end = strchr(value_start, '(');
+    if (value_end == NULL) {
+        return false;
+    }
+
+    for (const char *cursor = value_start; cursor < value_end; cursor++) {
+        if (*cursor >= '0' && *cursor <= '9') {
+            has_digit = true;
+            if (!after_separator) {
+                whole = (whole * 10U) + (uint32_t)(*cursor - '0');
+            } else if (fraction_digits < 3U) {
+                fraction = (fraction * 10U) + (uint32_t)(*cursor - '0');
+                fraction_digits++;
+            }
+        } else if ((*cursor == ',' || *cursor == '.') && !after_separator) {
+            after_separator = true;
+        }
+    }
+
+    if (!has_digit || whole > (UINT32_MAX / 1000U)) {
+        return false;
+    }
+
+    while (fraction_digits < 3U) {
+        fraction *= 10U;
+        fraction_digits++;
+    }
+
+    *milliliters_out = ((uint32_t)whole * 1000U) + fraction;
+    return true;
+}
+
+static void rs232_receipt_feed(const uint8_t *data, int len)
+{
+    uint32_t money = 0;
+    uint32_t liter_milliliters = 0;
+    uint32_t price = 0;
+
+    if (data == NULL || len <= 0 || rs232_receipt_mutex == NULL) {
+        return;
+    }
+
+    xSemaphoreTake(rs232_receipt_mutex, portMAX_DELAY);
+
+    if (rs232_receipt_ready) {
+        xSemaphoreGive(rs232_receipt_mutex);
+        return;
+    }
+
+    for (int i = 0; i < len; i++) {
+        char output_char;
+
+        if (data[i] >= 0x20 && data[i] <= 0x7e) {
+            output_char = (char)data[i];
+        } else if (data[i] == '\r' || data[i] == '\n' || data[i] == '\t') {
+            output_char = ' ';
+        } else {
+            continue;
+        }
+
+        if (rs232_receipt_length + 1U >= sizeof(rs232_receipt_buffer)) {
+            ESP_LOGW(TAG, "RS232 receipt buffer full, discard incomplete receipt");
+            rs232_receipt_length = 0;
+        }
+
+        rs232_receipt_buffer[rs232_receipt_length++] = output_char;
+    }
+    rs232_receipt_buffer[rs232_receipt_length] = '\0';
+
+    if (rs232_receipt_parse_grouped_uint("Thanh tien", &money) &&
+        rs232_receipt_parse_liter(&liter_milliliters) &&
+        rs232_receipt_parse_grouped_uint("Don gia", &price)) {
+        rs232_receipt_result.money = money;
+        rs232_receipt_result.liter_milliliters = liter_milliliters;
+        rs232_receipt_result.price = price;
+        rs232_receipt_ready = true;
+
+        ESP_LOGI(TAG,
+                 "RS232 receipt parsed: money=%lu liter=%lu.%03lu price=%lu",
+                 (unsigned long)money,
+                 (unsigned long)(liter_milliliters / 1000U),
+                 (unsigned long)(liter_milliliters % 1000U),
+                 (unsigned long)price);
+    }
+
+    xSemaphoreGive(rs232_receipt_mutex);
+}
+
+void rs232_receipt_reset(void)
+{
+    if (rs232_receipt_mutex == NULL) {
+        return;
+    }
+
+    xSemaphoreTake(rs232_receipt_mutex, portMAX_DELAY);
+    rs232_receipt_length = 0;
+    rs232_receipt_buffer[0] = '\0';
+    memset(&rs232_receipt_result, 0, sizeof(rs232_receipt_result));
+    rs232_receipt_ready = false;
+    xSemaphoreGive(rs232_receipt_mutex);
+
+    ESP_LOGI(TAG, "RS232 receipt collector reset");
+}
+
+bool rs232_receipt_get(rs232_receipt_data_t *result)
+{
+    bool ready;
+
+    if (result == NULL || rs232_receipt_mutex == NULL) {
+        return false;
+    }
+
+    xSemaphoreTake(rs232_receipt_mutex, portMAX_DELAY);
+    ready = rs232_receipt_ready;
+    if (ready) {
+        *result = rs232_receipt_result;
+    }
+    xSemaphoreGive(rs232_receipt_mutex);
+    return ready;
+}
+
 // Thread read RS232 data and send it to MQTT thread
 static void read_rs232_task(void *arg)
 {
+    (void)arg;
+#if RS232_RX_RAW_MONITOR
+    uint8_t *raw_data = (uint8_t *)malloc(RS232_RX_RAW_BUFFER_SIZE);
+    if (raw_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate RS232 raw monitor buffer");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "RS232 raw receipt mode: UART%d RX=GPIO%d, ATC parser disabled",
+             FD_UART_PORT_NUM,
+             FD_RS232_RXD);
+
+    while (1) {
+        int len = uart_read_bytes(FD_UART_PORT_NUM,
+                                  raw_data,
+                                  RS232_RX_RAW_BUFFER_SIZE,
+                                  pdMS_TO_TICKS(100));
+        RS232_RX_DEBUG_LOG(raw_data, len);
+        rs232_receipt_feed(raw_data, len);
+    }
+#else
     int index=0;
     // Configure a temporary buffer for the incoming data
     uint8_t *atc_data = (uint8_t *) malloc(1);
@@ -524,6 +758,7 @@ static void read_rs232_task(void *arg)
         }
 
     }
+#endif
 }
 
 static void IRAM_ATTR keypad_row_gpio_isr_handler(void *arg);
@@ -1366,6 +1601,13 @@ void rs232_config(void)
     ESP_ERROR_CHECK(uart_driver_install(FD_UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, intr_alloc_flags));
     ESP_ERROR_CHECK(uart_param_config(FD_UART_PORT_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(FD_UART_PORT_NUM, FD_RS232_TXD, FD_RS232_RXD, FD_RS232_RTS, FD_RS232_CTS));
+
+    rs232_receipt_mutex = xSemaphoreCreateMutex();
+    if (rs232_receipt_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create RS232 receipt mutex");
+    } else {
+        rs232_receipt_reset();
+    }
 
     control_switch_config();
     input_switch_config();

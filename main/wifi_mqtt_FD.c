@@ -37,6 +37,8 @@
 #define TBMQ_MSG_ID_LEN 32
 #define TBMQ_TOPIC_MAX_LEN 128
 #define VIRTUAL_KEYPAD_TASK_STACK_SIZE 6144
+#define RS232_RECEIPT_WAIT_MS 2000
+#define RS232_RECEIPT_POLL_MS 50
 
 typedef enum {
     PAYMENT_COMMAND_NONE = 0,
@@ -1078,13 +1080,14 @@ void payment_input_switch_update(uint8_t level)
 {
     char completed_msg_id[TBMQ_MSG_ID_LEN + 1];
     char completion_payload[224];
+    rs232_receipt_data_t receipt_data = {0};
     payment_command_type_t completed_type = PAYMENT_COMMAND_NONE;
-    uint32_t completed_money = 0;
-    uint32_t completed_litter = 0;
     uint16_t completed_price = 0;
     bool has_payment = false;
     bool has_completed_msg_id = false;
     bool should_publish_completion = false;
+    bool should_reset_receipt = false;
+    bool has_receipt_data = false;
 
     completed_msg_id[0] = '\0';
 
@@ -1099,8 +1102,6 @@ void payment_input_switch_update(uint8_t level)
         if (has_completed_msg_id) {
             snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
         }
-        completed_money = active_payment_money;
-        completed_litter = active_payment_litter;
         completed_price = u16CurPrice;
 
         if (level != 0) {
@@ -1108,6 +1109,7 @@ void payment_input_switch_update(uint8_t level)
                 ESP_LOGI(TAG, "Payment input switch ACTIVE: dispense started type=%d msg_id=%s",
                          completed_type,
                          completed_msg_id);
+                should_reset_receipt = true;
             }
             active_payment_input_started = true;
         } else if (active_payment_input_started) {
@@ -1118,6 +1120,10 @@ void payment_input_switch_update(uint8_t level)
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
+    }
+
+    if (should_reset_receipt) {
+        rs232_receipt_reset();
     }
 
     if (!has_payment) {
@@ -1136,31 +1142,65 @@ void payment_input_switch_update(uint8_t level)
         return;
     }
 
-    if (completed_type == PAYMENT_COMMAND_LITTER) {
+    for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
+         elapsed_ms += RS232_RECEIPT_POLL_MS) {
+        if (rs232_receipt_get(&receipt_data)) {
+            has_receipt_data = true;
+            break;
+        }
+
+        if (elapsed_ms < RS232_RECEIPT_WAIT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(RS232_RECEIPT_POLL_MS));
+        }
+    }
+
+    if (has_receipt_data) {
+        ESP_LOGI(TAG,
+                 "Use RS232 receipt for completion: money=%lu liter=%lu.%03lu price=%lu",
+                 (unsigned long)receipt_data.money,
+                 (unsigned long)(receipt_data.liter_milliliters / 1000U),
+                 (unsigned long)(receipt_data.liter_milliliters % 1000U),
+                 (unsigned long)receipt_data.price);
+
         if (has_completed_msg_id) {
             snprintf(completion_payload,
                      sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"liter\":%lu,\"price\":%u}",
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
                      protocol_timestamp_seconds(),
                      completed_msg_id,
-                     (unsigned long)completed_litter,
+                     (unsigned long)receipt_data.money,
+                     (unsigned long)(receipt_data.liter_milliliters / 1000U),
+                     (unsigned long)(receipt_data.liter_milliliters % 1000U),
+                     (unsigned long)receipt_data.price);
+        } else {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
+                     protocol_timestamp_seconds(),
+                     (unsigned long)receipt_data.money,
+                     (unsigned long)(receipt_data.liter_milliliters / 1000U),
+                     (unsigned long)(receipt_data.liter_milliliters % 1000U),
+                     (unsigned long)receipt_data.price);
+        }
+    } else {
+        ESP_LOGE(TAG,
+                 "RS232 receipt missing after %u ms: mark transaction failed with money=0 liter=0",
+                 (unsigned int)RS232_RECEIPT_WAIT_MS);
+
+        if (has_completed_msg_id) {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
+                     protocol_timestamp_seconds(),
+                     completed_msg_id,
                      (unsigned int)completed_price);
         } else {
             snprintf(completion_payload,
                      sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"liter\":%lu,\"price\":%u}",
+                     "{\"ts\":%lld,\"event\":\"completed\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
                      protocol_timestamp_seconds(),
-                     (unsigned long)completed_litter,
                      (unsigned int)completed_price);
         }
-    } else {
-        snprintf(completion_payload,
-                 sizeof(completion_payload),
-                 "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"price\":%u}",
-                 protocol_timestamp_seconds(),
-                 completed_msg_id,
-                 (unsigned long)completed_money,
-                 (unsigned int)completed_price);
     }
     ESP_LOGI(TAG, "Payment completed by INPUT_SWITCH GPIO6, payload=%s", completion_payload);
     int stat = push_completion_event(completion_payload, strlen(completion_payload));
@@ -1368,6 +1408,7 @@ void FD_wifi_mqtt_config(void)
 
     rs232_config();
     ESP_LOGI(TAG, "RS232 config done\n");
+    virtual_keypad_boot_clear();
     xTaskCreate(push_msg_to_broker, "push_msg_to_broker", 4096, NULL, 5, NULL);
     xTaskCreate(ping_tb, "ping_tb", 4096, NULL, 5, NULL);
     ota_start_github_version_check();

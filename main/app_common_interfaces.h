@@ -34,6 +34,12 @@ struct fuel_para {
     unsigned int money;
     unsigned int price; 
 };
+
+typedef struct {
+    uint32_t money;
+    uint32_t liter_milliliters;
+    uint32_t price;
+} rs232_receipt_data_t;
 extern QueueHandle_t uplink_queue;
 
 // List of Global variables which use for synchronize between submodules
@@ -60,6 +66,8 @@ void status_led_set_wifi_connected(bool connected);
 
 // rs232 configuration
 void rs232_config(void);
+void rs232_receipt_reset(void);
+bool rs232_receipt_get(rs232_receipt_data_t *result);
 void keypad_master_scan_pause_for_virtual_keypad(void);
 void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);
@@ -73,6 +81,8 @@ bool keypad_password_is_unlocked(void);
 
 // Keypad submodule interfaces
 void virtual_keypad_init();
+bool virtual_keypad_press_key(char key);
+void virtual_keypad_boot_clear(void);
 void virtual_keypad_set_external_physical(bool enabled);
 bool virtual_keypad_is_enabled(void);
 bool virtual_keypad_is_external_physical_enabled(void);

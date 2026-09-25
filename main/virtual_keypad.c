@@ -27,6 +27,8 @@ static SemaphoreHandle_t set_price_task_sem;
 #define VIRTUAL_KEYPAD_SWEEP_TEST 0
 #define VIRTUAL_KEYPAD_SWEEP_PRESS_MS 200
 #define VIRTUAL_KEYPAD_SWEEP_PERIOD_MS 200
+#define VIRTUAL_KEYPAD_BOOT_CLEAR_DELAY_MS 1000
+#define VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT 3
 #define VIRTUAL_KEYPAD_ADDR_SETTLE_MS 20
 #define VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS 120
 #define ORDER_CMD_SIZE 10
@@ -222,11 +224,11 @@ static void psudoe_press(uint8_t cluster, uint8_t pin)
     psudoe_press_timed(cluster, pin, 300, 600);
 }
 
-static void press_key(char key)
+static bool press_key(char key)
 {
     if (virtual_keypad_external_physical_enabled) {
         ESP_LOGW(TAG, "Skip virtual key=%c: external physical keypad mode is active", key);
-        return;
+        return false;
     }
 
     for (int j = 0; j < MAPPING_TABLE_SIZE; j++)
@@ -237,7 +239,7 @@ static void press_key(char key)
                      key,
                      mapping_table_1[j].pin);
             psudoe_press(1, mapping_table_1[j].pin);
-            return;
+            return true;
         }
         else if (key == mapping_table_2[j].btn)
         {
@@ -245,10 +247,11 @@ static void press_key(char key)
                      key,
                      mapping_table_2[j].pin);
             psudoe_press(2, mapping_table_2[j].pin);
-            return;
+            return true;
         }
     }
     ESP_LOGW(TAG, "Unsupported virtual key: %c", key);
+    return false;
 }
 
 static void press_key_array(const char *keys_to_press, size_t key_count)
@@ -335,6 +338,62 @@ static void virtual_keypad_sequence_end(const char *sequence_name)
     xSemaphoreGive(set_price_task_sem);
 }
 
+bool virtual_keypad_press_key(char key)
+{
+    bool pressed;
+
+    if (set_price_task_sem == NULL) {
+        ESP_LOGE(TAG, "Cannot press key=%c: virtual keypad is not initialized", key);
+        return false;
+    }
+
+    virtual_keypad_sequence_begin("single_key");
+    pressed = press_key(key);
+    virtual_keypad_sequence_end("single_key");
+    return pressed;
+}
+
+void virtual_keypad_boot_clear(void)
+{
+    bool restore_external_physical;
+
+    if (set_price_task_sem == NULL) {
+        ESP_LOGE(TAG, "Cannot run boot keypad clear: virtual keypad is not initialized");
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "Boot keypad clear scheduled: press C %u times after %u ms",
+             (unsigned int)VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT,
+             (unsigned int)VIRTUAL_KEYPAD_BOOT_CLEAR_DELAY_MS);
+
+    vTaskDelay(pdMS_TO_TICKS(VIRTUAL_KEYPAD_BOOT_CLEAR_DELAY_MS));
+
+    virtual_keypad_sequence_begin("boot_clear");
+
+    restore_external_physical = virtual_keypad_external_physical_enabled;
+    if (restore_external_physical) {
+        virtual_keypad_apply_external_physical(false, false);
+    }
+
+    for (uint32_t i = 0; i < VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT; i++) {
+        ESP_LOGI(TAG,
+                 "Boot keypad clear %u/%u",
+                 (unsigned int)(i + 1),
+                 (unsigned int)VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT);
+        (void)press_key('C');
+    }
+
+    virtual_keypad_idle();
+    if (restore_external_physical) {
+        virtual_keypad_apply_external_physical(true, false);
+    }
+
+    virtual_keypad_sequence_end("boot_clear");
+
+    ESP_LOGW(TAG, "Boot keypad clear completed");
+}
+
 static void virtual_keypad_sweep_test_task(void *arg)
 {
     (void)arg;
@@ -384,6 +443,10 @@ void virtual_keypad_init()
     virtual_keypad_apply_external_physical(external_physical_enabled, false);
 
     set_price_task_sem = xSemaphoreCreateBinary();
+    if (set_price_task_sem == NULL) {
+        ESP_LOGE(TAG, "Failed to create virtual keypad semaphore");
+        return;
+    }
     xSemaphoreGive(set_price_task_sem);
 
 #if VIRTUAL_KEYPAD_SWEEP_TEST

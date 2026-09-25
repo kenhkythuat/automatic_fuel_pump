@@ -1,6 +1,6 @@
 {
-  "version": "1.0.14",
-  "build": 14,
+  "version": "1.0.15",
+  "build": 15,
   "target": "esp32s3",
   "force": false,
   "firmware_url": "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/atc_wifi_fw.bin",
