@@ -17,9 +17,9 @@
 #define TAG "OTA"
 
 #define OTA_GITHUB_VERSION_URL \
-    "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/version.json"
+    "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/read_rs232_printer/releases/esp32s3/version.json"
 #define OTA_DEFAULT_FIRMWARE_URL \
-    "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/atc_wifi_fw.bin"
+    "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/read_rs232_printer/releases/esp32s3/atc_wifi_fw.bin"
 #define OTA_VERSION_CHECK_INTERVAL_MS 30000
 #define OTA_HTTP_TIMEOUT_MS 10000
 #define OTA_VERSION_JSON_MAX_SIZE 1024
