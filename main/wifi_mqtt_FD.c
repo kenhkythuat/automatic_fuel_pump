@@ -1184,7 +1184,8 @@ void payment_input_switch_update(uint8_t level)
         }
     } else {
         ESP_LOGE(TAG,
-                 "RS232 receipt missing after %u ms: mark transaction failed with money=0 liter=0",
+                 "RS232 receipt missing for %s after %u ms: mark transaction failed with money=0 liter=0",
+                 completed_type == PAYMENT_COMMAND_LITTER ? "set_qr_litter" : "set_qr_money",
                  (unsigned int)RS232_RECEIPT_WAIT_MS);
 
         if (has_completed_msg_id) {

@@ -24,7 +24,7 @@
 // 0: alternate keypad flow.
 //    set_qr_money keeps the existing scaled keypad amount behavior.
 #ifndef MAIN_RS232
-#define MAIN_RS232 1
+#define MAIN_RS232 0
 #endif
 
 void wifi_sta_main(void);
