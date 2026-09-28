@@ -4,6 +4,6 @@ nodeconfig,namespace
 deviceId,data,string,"node_pay_004"
 gw_pay,data,string,"gw_pay_001"
 mqttClientId,data,string,"node_pay_004"
-fwVerion,data,u8,15
+fwVerion,data,u8,17
 OperationMode,data,u8,1
 price,data,u16,10000
