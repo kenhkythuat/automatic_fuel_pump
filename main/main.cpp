@@ -30,7 +30,7 @@ extern "C"
 #define TAG "MAIN"
 
 // OTA server URL
-#define FW_URL "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/feature/esp32s3/releases/esp32s3/atc_wifi_fw.bin"
+#define FW_URL "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/read_rs232_printer/releases/esp32s3/atc_wifi_fw.bin"
 #define DEFAULT_DEVICE_ID "node_pay_001"
 #define DEFAULT_GW_PAY_ID "gw_pay_001"
 #define DEFAULT_MQTT_CLIENT_ID "node_qr_001"
