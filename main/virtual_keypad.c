@@ -40,7 +40,7 @@ static SemaphoreHandle_t set_price_task_sem;
 static bool virtual_keypad_external_physical_enabled;
 char order[ORDER_CMD_SIZE] = {'C','C','P','1', '2', '3', '4', '5', '6', 'E'};
 char alt_set_price_cmd[ALT_SET_PRICE_CMD_SIZE] = {'C','C','T', 'P', '0', '1', '2', 'E'};
-char alt_set_price_password[ALT_SET_PRICE_PASSWORD_SIZE] = {'2', '2', '2', '2', '2', '2','E'};
+char alt_set_price_password[ALT_SET_PRICE_PASSWORD_SIZE] = {'1', '2', '3', '4', '5', '6','E'};
 char end_session[END_SESSION_CMD_SIZE] = {'T', '8', '1', '2', '3', '4', '5', '6', 'E'};
 uint8_t pin_control[8] = {14, 13, 12, 8, 16, 17, 18, 19};
 char keys[4][4] =
