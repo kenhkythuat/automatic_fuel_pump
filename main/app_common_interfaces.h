@@ -68,6 +68,7 @@ void status_led_set_wifi_connected(bool connected);
 void rs232_config(void);
 void rs232_receipt_reset(void);
 bool rs232_receipt_get(rs232_receipt_data_t *result);
+void payment_rs232_receipt_ready(const rs232_receipt_data_t *result);
 void keypad_master_scan_pause_for_virtual_keypad(void);
 void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);

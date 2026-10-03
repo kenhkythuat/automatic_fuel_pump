@@ -39,12 +39,21 @@
 #define VIRTUAL_KEYPAD_TASK_STACK_SIZE 6144
 #define RS232_RECEIPT_WAIT_MS 2000
 #define RS232_RECEIPT_POLL_MS 50
+#define PAYMENT_RECEIPT_QUEUE_LENGTH 2
+#define PAYMENT_RECEIPT_TASK_STACK_SIZE 4096
 
 typedef enum {
     PAYMENT_COMMAND_NONE = 0,
     PAYMENT_COMMAND_MONEY,
     PAYMENT_COMMAND_LITTER,
 } payment_command_type_t;
+
+typedef struct {
+    char msg_id[TBMQ_MSG_ID_LEN + 1];
+    payment_command_type_t type;
+    uint16_t configured_price;
+    bool has_msg_id;
+} payment_completion_context_t;
 
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 //extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
@@ -53,6 +62,7 @@ const int MQTT_CONNECTED_EVENT = BIT0;
 static EventGroupHandle_t mqtt_conn_event_group;
 static SemaphoreHandle_t push_msg_sem;
 static SemaphoreHandle_t payment_ctx_sem;
+static QueueHandle_t payment_receipt_queue;
 static esp_mqtt_client_handle_t client;
 static bool mqtt_connected;
 static char mqtt_client_id[96];
@@ -326,6 +336,54 @@ static void clear_active_payment_context(const char *completed_msg_id)
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
     }
+}
+
+static bool claim_active_payment_context(payment_completion_context_t *context)
+{
+    bool claimed = false;
+
+    if (context == NULL) {
+        return false;
+    }
+
+    memset(context, 0, sizeof(*context));
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    }
+
+    /* A receipt can complete only a transaction that has actually started.
+     * This rejects stale printer data received after a command but before
+     * INPUT_SWITCH has ever reached the ACTIVE level. */
+    if (active_payment_active && active_payment_input_started) {
+        context->type = active_payment_type;
+        context->configured_price = u16CurPrice;
+        context->has_msg_id = active_payment_has_msg_id;
+        if (active_payment_has_msg_id) {
+            snprintf(context->msg_id,
+                     sizeof(context->msg_id),
+                     "%s",
+                     active_payment_msg_id);
+        }
+
+        /* Claim and clear atomically.  This guarantees that the RS232-ready
+         * path and the INPUT_SWITCH timeout path cannot publish twice. */
+        active_payment_msg_id[0] = '\0';
+        active_payment_type = PAYMENT_COMMAND_NONE;
+        active_payment_money = 0;
+        active_payment_litter = 0;
+        active_payment_active = false;
+        active_payment_has_msg_id = false;
+        active_payment_input_started = false;
+        active_payment_money_keypad_done = false;
+        claimed = true;
+    }
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreGive(payment_ctx_sem);
+    }
+
+    return claimed;
 }
 
 bool payment_control_switch_can_follow_input(void)
@@ -1076,18 +1134,115 @@ static int push_completion_event(char *msg_payload, uint16_t msg_len) {
     return stat;
 }
 
+static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
+                                       bool missing_receipt,
+                                       const char *source)
+{
+    payment_completion_context_t completed = {0};
+    char completion_payload[224];
+
+    if (!claim_active_payment_context(&completed)) {
+        ESP_LOGD(TAG,
+                 "Payment completion from %s ignored: no active transaction",
+                 source != NULL ? source : "unknown");
+        return false;
+    }
+
+    if (!missing_receipt && receipt_data != NULL) {
+        ESP_LOGI(TAG,
+                 "Use RS232 receipt immediately: money=%lu liter=%lu.%03lu price=%lu",
+                 (unsigned long)receipt_data->money,
+                 (unsigned long)(receipt_data->liter_milliliters / 1000U),
+                 (unsigned long)(receipt_data->liter_milliliters % 1000U),
+                 (unsigned long)receipt_data->price);
+
+        if (completed.has_msg_id) {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
+                     protocol_timestamp_seconds(),
+                     completed.msg_id,
+                     (unsigned long)receipt_data->money,
+                     (unsigned long)(receipt_data->liter_milliliters / 1000U),
+                     (unsigned long)(receipt_data->liter_milliliters % 1000U),
+                     (unsigned long)receipt_data->price);
+        } else {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
+                     protocol_timestamp_seconds(),
+                     (unsigned long)receipt_data->money,
+                     (unsigned long)(receipt_data->liter_milliliters / 1000U),
+                     (unsigned long)(receipt_data->liter_milliliters % 1000U),
+                     (unsigned long)receipt_data->price);
+        }
+    } else {
+        ESP_LOGE(TAG,
+                 "RS232 receipt missing for %s after %u ms: mark transaction failed with money=0 liter=0",
+                 completed.type == PAYMENT_COMMAND_LITTER ? "set_qr_litter" : "set_qr_money",
+                 (unsigned int)RS232_RECEIPT_WAIT_MS);
+
+        if (completed.has_msg_id) {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
+                     protocol_timestamp_seconds(),
+                     completed.msg_id,
+                     (unsigned int)completed.configured_price);
+        } else {
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "{\"ts\":%lld,\"event\":\"completed\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
+                     protocol_timestamp_seconds(),
+                     (unsigned int)completed.configured_price);
+        }
+    }
+
+    ESP_LOGI(TAG,
+             "Payment completion triggered by %s, payload=%s",
+             source != NULL ? source : "unknown",
+             completion_payload);
+    int stat = push_completion_event(completion_payload, strlen(completion_payload));
+    ESP_LOGI(TAG, "completion event publish stat=%d", stat);
+    return true;
+}
+
+void payment_rs232_receipt_ready(const rs232_receipt_data_t *result)
+{
+    if (result == NULL || payment_receipt_queue == NULL) {
+        ESP_LOGW(TAG, "RS232 receipt notification ignored: MQTT receipt queue is not ready");
+        return;
+    }
+
+    if (xQueueSend(payment_receipt_queue, result, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "RS232 receipt notification queue is full");
+    }
+}
+
+static void payment_receipt_task(void *arg)
+{
+    (void)arg;
+    rs232_receipt_data_t receipt_data;
+
+    for (;;) {
+        if (xQueueReceive(payment_receipt_queue,
+                          &receipt_data,
+                          portMAX_DELAY) == pdTRUE) {
+            (void)publish_payment_completion(&receipt_data,
+                                             false,
+                                             "RS232 receipt");
+        }
+    }
+}
+
 void payment_input_switch_update(uint8_t level)
 {
     char completed_msg_id[TBMQ_MSG_ID_LEN + 1];
-    char completion_payload[224];
     rs232_receipt_data_t receipt_data = {0};
-    payment_command_type_t completed_type = PAYMENT_COMMAND_NONE;
-    uint16_t completed_price = 0;
+    payment_command_type_t active_type = PAYMENT_COMMAND_NONE;
     bool has_payment = false;
-    bool has_completed_msg_id = false;
-    bool should_publish_completion = false;
+    bool should_check_receipt = false;
     bool should_reset_receipt = false;
-    bool has_receipt_data = false;
 
     completed_msg_id[0] = '\0';
 
@@ -1097,24 +1252,21 @@ void payment_input_switch_update(uint8_t level)
 
     has_payment = active_payment_active;
     if (has_payment) {
-        completed_type = active_payment_type;
-        has_completed_msg_id = active_payment_has_msg_id;
-        if (has_completed_msg_id) {
+        active_type = active_payment_type;
+        if (active_payment_has_msg_id) {
             snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
         }
-        completed_price = u16CurPrice;
 
         if (level != 0) {
             if (!active_payment_input_started) {
                 ESP_LOGI(TAG, "Payment input switch ACTIVE: dispense started type=%d msg_id=%s",
-                         completed_type,
+                         active_type,
                          completed_msg_id);
                 should_reset_receipt = true;
             }
             active_payment_input_started = true;
         } else if (active_payment_input_started) {
-            active_payment_input_started = false;
-            should_publish_completion = true;
+            should_check_receipt = true;
         }
     }
 
@@ -1132,21 +1284,26 @@ void payment_input_switch_update(uint8_t level)
         return;
     }
 
-    if (level == 0 && !should_publish_completion) {
+    if (level == 0 && !should_check_receipt) {
         ESP_LOGD(TAG, "Payment input switch IDLE ignored: dispense was not started msg_id=%s",
                  completed_msg_id);
         return;
     }
 
-    if (!should_publish_completion) {
+    if (!should_check_receipt) {
         return;
     }
 
     for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
          elapsed_ms += RS232_RECEIPT_POLL_MS) {
         if (rs232_receipt_get(&receipt_data)) {
-            has_receipt_data = true;
-            break;
+            /* Usually the RS232 queue task has already sent this event before
+             * the handle is returned.  Calling the common function is safe:
+             * the atomic context claim prevents duplicate publication. */
+            (void)publish_payment_completion(&receipt_data,
+                                             false,
+                                             "INPUT_SWITCH receipt fallback");
+            return;
         }
 
         if (elapsed_ms < RS232_RECEIPT_WAIT_MS) {
@@ -1154,59 +1311,9 @@ void payment_input_switch_update(uint8_t level)
         }
     }
 
-    if (has_receipt_data) {
-        ESP_LOGI(TAG,
-                 "Use RS232 receipt for completion: money=%lu liter=%lu.%03lu price=%lu",
-                 (unsigned long)receipt_data.money,
-                 (unsigned long)(receipt_data.liter_milliliters / 1000U),
-                 (unsigned long)(receipt_data.liter_milliliters % 1000U),
-                 (unsigned long)receipt_data.price);
-
-        if (has_completed_msg_id) {
-            snprintf(completion_payload,
-                     sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
-                     protocol_timestamp_seconds(),
-                     completed_msg_id,
-                     (unsigned long)receipt_data.money,
-                     (unsigned long)(receipt_data.liter_milliliters / 1000U),
-                     (unsigned long)(receipt_data.liter_milliliters % 1000U),
-                     (unsigned long)receipt_data.price);
-        } else {
-            snprintf(completion_payload,
-                     sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
-                     protocol_timestamp_seconds(),
-                     (unsigned long)receipt_data.money,
-                     (unsigned long)(receipt_data.liter_milliliters / 1000U),
-                     (unsigned long)(receipt_data.liter_milliliters % 1000U),
-                     (unsigned long)receipt_data.price);
-        }
-    } else {
-        ESP_LOGE(TAG,
-                 "RS232 receipt missing for %s after %u ms: mark transaction failed with money=0 liter=0",
-                 completed_type == PAYMENT_COMMAND_LITTER ? "set_qr_litter" : "set_qr_money",
-                 (unsigned int)RS232_RECEIPT_WAIT_MS);
-
-        if (has_completed_msg_id) {
-            snprintf(completion_payload,
-                     sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
-                     protocol_timestamp_seconds(),
-                     completed_msg_id,
-                     (unsigned int)completed_price);
-        } else {
-            snprintf(completion_payload,
-                     sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"result\":\"error\",\"description\":\"missing_rs232_receipt\",\"money\":0,\"liter\":0,\"price\":%u}",
-                     protocol_timestamp_seconds(),
-                     (unsigned int)completed_price);
-        }
-    }
-    ESP_LOGI(TAG, "Payment completed by INPUT_SWITCH GPIO6, payload=%s", completion_payload);
-    int stat = push_completion_event(completion_payload, strlen(completion_payload));
-    ESP_LOGI(TAG, "completion event publish stat=%d", stat);
-    clear_active_payment_context(has_completed_msg_id ? completed_msg_id : NULL);
+    (void)publish_payment_completion(NULL,
+                                     true,
+                                     "INPUT_SWITCH timeout");
 }
 
 static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {
@@ -1394,6 +1501,26 @@ void FD_wifi_mqtt_config(void)
     payment_ctx_sem = xSemaphoreCreateMutex();
     if (payment_ctx_sem == NULL) {
         ESP_LOGE(TAG, "Failed to create payment context mutex");
+        return;
+    }
+
+    payment_receipt_queue = xQueueCreate(PAYMENT_RECEIPT_QUEUE_LENGTH,
+                                         sizeof(rs232_receipt_data_t));
+    if (payment_receipt_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create RS232 payment receipt queue");
+        return;
+    }
+
+    BaseType_t receipt_task_created = xTaskCreate(payment_receipt_task,
+                                                   "payment_receipt",
+                                                   PAYMENT_RECEIPT_TASK_STACK_SIZE,
+                                                   NULL,
+                                                   5,
+                                                   NULL);
+    if (receipt_task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create RS232 payment receipt task");
+        vQueueDelete(payment_receipt_queue);
+        payment_receipt_queue = NULL;
         return;
     }
 

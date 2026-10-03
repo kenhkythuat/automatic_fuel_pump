@@ -369,6 +369,8 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     uint32_t money = 0;
     uint32_t liter_milliliters = 0;
     uint32_t price = 0;
+    rs232_receipt_data_t completed_receipt = {0};
+    bool receipt_just_completed = false;
 
     if (data == NULL || len <= 0 || rs232_receipt_mutex == NULL) {
         return;
@@ -408,6 +410,8 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
         rs232_receipt_result.liter_milliliters = liter_milliliters;
         rs232_receipt_result.price = price;
         rs232_receipt_ready = true;
+        completed_receipt = rs232_receipt_result;
+        receipt_just_completed = true;
 
         ESP_LOGI(TAG,
                  "RS232 receipt parsed: money=%lu liter=%lu.%03lu price=%lu",
@@ -418,6 +422,13 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     }
 
     xSemaphoreGive(rs232_receipt_mutex);
+
+    /* Notify MQTT only after releasing the receipt mutex.  The MQTT side uses
+     * a queue, so the UART task stays responsive and cannot deadlock with a
+     * simultaneous INPUT_SWITCH event. */
+    if (receipt_just_completed) {
+        payment_rs232_receipt_ready(&completed_receipt);
+    }
 }
 
 void rs232_receipt_reset(void)
