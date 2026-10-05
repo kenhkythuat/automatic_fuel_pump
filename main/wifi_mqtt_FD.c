@@ -41,6 +41,7 @@
 #define RS232_RECEIPT_POLL_MS 50
 #define PAYMENT_RECEIPT_QUEUE_LENGTH 2
 #define PAYMENT_RECEIPT_TASK_STACK_SIZE 4096
+#define VIRTUAL_PAYMENT_CONTROL_OFF_DELAY_MS 5000
 #define PING_TASK_STACK_SIZE 6144
 #define RS232_LINK_TEST_TIMEOUT_MS 5000
 #define RS232_LINK_TEST_POLL_MS 50
@@ -1256,6 +1257,12 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
              completion_payload);
     int stat = push_completion_event(completion_payload, strlen(completion_payload));
     ESP_LOGI(TAG, "completion event publish stat=%d", stat);
+
+    if (stat >= 0 && !missing_receipt && receipt_data != NULL &&
+        virtual_keypad_is_enabled()) {
+        input_switch_schedule_virtual_control_off(
+            VIRTUAL_PAYMENT_CONTROL_OFF_DELAY_MS);
+    }
     return true;
 }
 

@@ -10,6 +10,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
+#include "freertos/timers.h"
 #include "sdkconfig.h"
 #include "xtensa/core-macros.h"
 
@@ -136,6 +137,7 @@ static volatile uint32_t keypad_col_last_rise_cycle[KEYPAD_COL_COUNT];
 static volatile bool keypad_master_scan_paused;
 static volatile bool keypad_master_scan_external_physical_mode;
 static QueueHandle_t input_switch_queue;
+static TimerHandle_t control_switch_off_timer;
 
 typedef struct {
     uint8_t row;
@@ -1313,6 +1315,60 @@ uint8_t input_switch_get_level(void)
     return (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
 }
 
+static void control_switch_off_timer_callback(TimerHandle_t timer)
+{
+    (void)timer;
+
+    if (!virtual_keypad_is_enabled()) {
+        ESP_LOGI(TAG,
+                 "CONTROL_SWITCH delayed OFF skipped: external physical keypad is active");
+        return;
+    }
+
+    /* Do not let an old transaction timer interrupt a newer virtual payment
+     * that has already completed its keypad sequence. */
+    if (payment_control_switch_can_follow_input()) {
+        ESP_LOGI(TAG,
+                 "CONTROL_SWITCH delayed OFF skipped: another virtual payment is active");
+        return;
+    }
+
+    uint8_t input_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
+    if (input_level != 0) {
+        gpio_set_level(CONTROL_SWITCH_PIN, 0);
+        ESP_LOGW(TAG,
+                 "CONTROL_SWITCH GPIO%d forced OFF 5s after payment event while INPUT_SWITCH GPIO%d remains ACTIVE",
+                 CONTROL_SWITCH_PIN,
+                 INPUT_SWITCH_PIN);
+    }
+}
+
+void input_switch_schedule_virtual_control_off(uint32_t delay_ms)
+{
+    if (!virtual_keypad_is_enabled() || control_switch_off_timer == NULL) {
+        return;
+    }
+
+    if (delay_ms == 0U) {
+        delay_ms = 1U;
+    }
+
+    TickType_t delay_ticks = pdMS_TO_TICKS(delay_ms);
+    if (delay_ticks == 0) {
+        delay_ticks = 1;
+    }
+
+    (void)xTimerStop(control_switch_off_timer, 0);
+    if (xTimerChangePeriod(control_switch_off_timer, delay_ticks, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to schedule CONTROL_SWITCH delayed OFF");
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "CONTROL_SWITCH delayed OFF scheduled after %lu ms for virtual keypad payment",
+             (unsigned long)delay_ms);
+}
+
 static void input_switch_task(void *arg)
 {
     (void)arg;
@@ -1370,6 +1426,15 @@ static void control_switch_config(void)
 
     ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d configured as output initial=0",
              CONTROL_SWITCH_PIN);
+
+    control_switch_off_timer = xTimerCreate("ctrl_sw_off",
+                                            pdMS_TO_TICKS(5000),
+                                            pdFALSE,
+                                            NULL,
+                                            control_switch_off_timer_callback);
+    if (control_switch_off_timer == NULL) {
+        ESP_LOGE(TAG, "Failed to create CONTROL_SWITCH delayed OFF timer");
+    }
 }
 
 static void input_switch_config(void)
