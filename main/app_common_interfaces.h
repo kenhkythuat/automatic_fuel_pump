@@ -39,6 +39,7 @@ typedef struct {
     uint32_t money;
     uint32_t liter_milliliters;
     uint32_t price;
+    char mgd[16];
 } rs232_receipt_data_t;
 extern QueueHandle_t uplink_queue;
 
@@ -69,6 +70,7 @@ void rs232_config(void);
 void rs232_receipt_reset(void);
 bool rs232_receipt_get(rs232_receipt_data_t *result);
 void payment_rs232_receipt_ready(const rs232_receipt_data_t *result);
+uint8_t input_switch_get_level(void);
 void keypad_master_scan_pause_for_virtual_keypad(void);
 void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);
@@ -84,6 +86,8 @@ bool keypad_password_is_unlocked(void);
 void virtual_keypad_init();
 bool virtual_keypad_press_key(char key);
 void virtual_keypad_boot_clear(void);
+bool virtual_keypad_request_last_receipt(bool allow_external_override,
+                                         bool wait_for_keypad);
 void virtual_keypad_set_external_physical(bool enabled);
 bool virtual_keypad_is_enabled(void);
 bool virtual_keypad_is_external_physical_enabled(void);

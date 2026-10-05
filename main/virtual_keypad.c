@@ -325,6 +325,22 @@ static void virtual_keypad_sequence_begin(const char *sequence_name)
     ESP_LOGI(TAG, "Virtual keypad sequence begin: %s", sequence_name);
 }
 
+static bool virtual_keypad_sequence_try_begin(const char *sequence_name)
+{
+    if (xSemaphoreTake(set_price_task_sem, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Virtual keypad sequence busy, skip: %s", sequence_name);
+        return false;
+    }
+
+#if !USE_EXTERNAL_PHYSICAL_KEYPAD
+    keypad_master_scan_pause_for_virtual_keypad();
+#endif
+
+    vTaskDelay(pdMS_TO_TICKS(VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS));
+    ESP_LOGI(TAG, "Virtual keypad sequence begin: %s", sequence_name);
+    return true;
+}
+
 static void virtual_keypad_sequence_end(const char *sequence_name)
 {
     ESP_LOGI(TAG, "Virtual keypad sequence end: %s", sequence_name);
@@ -392,6 +408,47 @@ void virtual_keypad_boot_clear(void)
     virtual_keypad_sequence_end("boot_clear");
 
     ESP_LOGW(TAG, "Boot keypad clear completed");
+}
+
+bool virtual_keypad_request_last_receipt(bool allow_external_override,
+                                         bool wait_for_keypad)
+{
+    bool restore_external_physical;
+    bool pressed;
+
+    if (set_price_task_sem == NULL) {
+        ESP_LOGE(TAG, "Cannot request last receipt: virtual keypad is not initialized");
+        return false;
+    }
+
+    if (wait_for_keypad) {
+        virtual_keypad_sequence_begin("rs232_link_test_T7");
+    } else if (!virtual_keypad_sequence_try_begin("rs232_link_test_T7")) {
+        return false;
+    }
+
+    restore_external_physical = virtual_keypad_external_physical_enabled;
+    if (restore_external_physical && !allow_external_override) {
+        ESP_LOGW(TAG, "Skip T7: external physical keypad mode is active");
+        virtual_keypad_sequence_end("rs232_link_test_T7");
+        return false;
+    }
+
+    if (restore_external_physical) {
+        virtual_keypad_apply_external_physical(false, false);
+    }
+
+    ESP_LOGI(TAG, "RS232 link test: press virtual sequence T7");
+    pressed = press_key('T');
+    pressed = press_key('7') && pressed;
+
+    virtual_keypad_idle();
+    if (restore_external_physical) {
+        virtual_keypad_apply_external_physical(true, false);
+    }
+
+    virtual_keypad_sequence_end("rs232_link_test_T7");
+    return pressed;
 }
 
 static void virtual_keypad_sweep_test_task(void *arg)

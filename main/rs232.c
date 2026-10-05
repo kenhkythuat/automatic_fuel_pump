@@ -270,6 +270,41 @@ static size_t rs232_receipt_length;
 static rs232_receipt_data_t rs232_receipt_result;
 static bool rs232_receipt_ready;
 
+static bool rs232_receipt_parse_mgd(char *mgd_out, size_t mgd_out_size)
+{
+    const char *field = strstr(rs232_receipt_buffer, "MGD");
+    const char *cursor;
+    size_t mgd_length = 0;
+
+    if (field == NULL || mgd_out == NULL || mgd_out_size < 2U) {
+        return false;
+    }
+
+    cursor = strchr(field + strlen("MGD"), ':');
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor++;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+
+    while (*cursor >= '0' && *cursor <= '9') {
+        if (mgd_length + 1U >= mgd_out_size) {
+            return false;
+        }
+        mgd_out[mgd_length++] = *cursor++;
+    }
+
+    if (mgd_length == 0U) {
+        return false;
+    }
+
+    mgd_out[mgd_length] = '\0';
+    return true;
+}
+
 static bool rs232_receipt_parse_grouped_uint(const char *label, uint32_t *value_out)
 {
     const char *field = strstr(rs232_receipt_buffer, label);
@@ -369,6 +404,7 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     uint32_t money = 0;
     uint32_t liter_milliliters = 0;
     uint32_t price = 0;
+    char mgd[sizeof(rs232_receipt_result.mgd)] = {0};
     rs232_receipt_data_t completed_receipt = {0};
     bool receipt_just_completed = false;
 
@@ -403,18 +439,24 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     }
     rs232_receipt_buffer[rs232_receipt_length] = '\0';
 
-    if (rs232_receipt_parse_grouped_uint("Thanh tien", &money) &&
+    if (rs232_receipt_parse_mgd(mgd, sizeof(mgd)) &&
+        rs232_receipt_parse_grouped_uint("Thanh tien", &money) &&
         rs232_receipt_parse_liter(&liter_milliliters) &&
         rs232_receipt_parse_grouped_uint("Don gia", &price)) {
         rs232_receipt_result.money = money;
         rs232_receipt_result.liter_milliliters = liter_milliliters;
         rs232_receipt_result.price = price;
+        snprintf(rs232_receipt_result.mgd,
+                 sizeof(rs232_receipt_result.mgd),
+                 "%s",
+                 mgd);
         rs232_receipt_ready = true;
         completed_receipt = rs232_receipt_result;
         receipt_just_completed = true;
 
         ESP_LOGI(TAG,
-                 "RS232 receipt parsed: money=%lu liter=%lu.%03lu price=%lu",
+                 "RS232 receipt parsed: MGD=%s money=%lu liter=%lu.%03lu price=%lu",
+                 rs232_receipt_result.mgd,
                  (unsigned long)money,
                  (unsigned long)(liter_milliliters / 1000U),
                  (unsigned long)(liter_milliliters % 1000U),
@@ -1264,6 +1306,11 @@ void input_switch_refresh_control_switch(void)
 {
     uint8_t current_level = (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
     input_switch_apply_control_level(current_level, "refresh");
+}
+
+uint8_t input_switch_get_level(void)
+{
+    return (uint8_t)gpio_get_level(INPUT_SWITCH_PIN);
 }
 
 static void input_switch_task(void *arg)

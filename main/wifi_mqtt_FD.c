@@ -41,6 +41,12 @@
 #define RS232_RECEIPT_POLL_MS 50
 #define PAYMENT_RECEIPT_QUEUE_LENGTH 2
 #define PAYMENT_RECEIPT_TASK_STACK_SIZE 4096
+#define PING_TASK_STACK_SIZE 6144
+#define RS232_LINK_TEST_TIMEOUT_MS 5000
+#define RS232_LINK_TEST_POLL_MS 50
+/* Required explicitly by the hardware workflow: run the periodic T7 test
+ * only while INPUT_SWITCH GPIO6 reads high. */
+#define RS232_LINK_TEST_INPUT_LEVEL 0
 
 typedef enum {
     PAYMENT_COMMAND_NONE = 0,
@@ -54,6 +60,18 @@ typedef struct {
     uint16_t configured_price;
     bool has_msg_id;
 } payment_completion_context_t;
+
+typedef enum {
+    RS232_LINK_STATUS_UNKNOWN = 0,
+    RS232_LINK_STATUS_OK,
+    RS232_LINK_STATUS_ERROR,
+} rs232_link_status_t;
+
+typedef enum {
+    RS232_LINK_CHECK_SKIPPED = 0,
+    RS232_LINK_CHECK_OK,
+    RS232_LINK_CHECK_ERROR,
+} rs232_link_check_result_t;
 
 //extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
 //extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
@@ -313,6 +331,23 @@ static bool get_active_payment_msg_id(char *msg_id_out, size_t msg_id_out_size)
     return has_msg_id;
 }
 
+static bool payment_transaction_is_active(void)
+{
+    bool is_active;
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    }
+
+    is_active = active_payment_active;
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreGive(payment_ctx_sem);
+    }
+
+    return is_active;
+}
+
 static void clear_active_payment_context(const char *completed_msg_id)
 {
     if (payment_ctx_sem != NULL) {
@@ -410,6 +445,7 @@ bool payment_control_switch_can_follow_input(void)
 void payment_set_qr_money_keypad_done(void)
 {
     bool should_refresh_control = false;
+    uint8_t current_input_level = 0;
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
@@ -428,6 +464,19 @@ void payment_set_qr_money_keypad_done(void)
     }
 
     if (should_refresh_control) {
+        /* GPIO6 may already have been high before the MQTT command arrived,
+         * so there might be no new rising edge for input_switch_task to see.
+         * Sample the current level after the virtual keypad sequence.  Mark
+         * the payment started (and reset the RS232 receipt collector) before
+         * refreshing GPIO7, because refreshing GPIO7 can allow dispensing to
+         * begin immediately. */
+        current_input_level = input_switch_get_level();
+        if (current_input_level != 0) {
+            ESP_LOGI(TAG,
+                     "Virtual keypad done while INPUT_SWITCH GPIO6 is already ACTIVE; accept current level as dispense start");
+            payment_input_switch_update(current_input_level);
+        }
+
         input_switch_refresh_control_switch();
     }
 }
@@ -1150,7 +1199,8 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
 
     if (!missing_receipt && receipt_data != NULL) {
         ESP_LOGI(TAG,
-                 "Use RS232 receipt immediately: money=%lu liter=%lu.%03lu price=%lu",
+                 "Use RS232 receipt immediately: MGD=%s money=%lu liter=%lu.%03lu price=%lu",
+                 receipt_data->mgd,
                  (unsigned long)receipt_data->money,
                  (unsigned long)(receipt_data->liter_milliliters / 1000U),
                  (unsigned long)(receipt_data->liter_milliliters % 1000U),
@@ -1159,9 +1209,10 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
         if (completed.has_msg_id) {
             snprintf(completion_payload,
                      sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
+                     "{\"ts\":%lld,\"event\":\"completed\",\"msg_id\":\"%s\",\"MGD\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
                      protocol_timestamp_seconds(),
                      completed.msg_id,
+                     receipt_data->mgd,
                      (unsigned long)receipt_data->money,
                      (unsigned long)(receipt_data->liter_milliliters / 1000U),
                      (unsigned long)(receipt_data->liter_milliliters % 1000U),
@@ -1169,8 +1220,9 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
         } else {
             snprintf(completion_payload,
                      sizeof(completion_payload),
-                     "{\"ts\":%lld,\"event\":\"completed\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
+                     "{\"ts\":%lld,\"event\":\"completed\",\"MGD\":\"%s\",\"money\":%lu,\"liter\":%lu.%03lu,\"price\":%lu}",
                      protocol_timestamp_seconds(),
+                     receipt_data->mgd,
                      (unsigned long)receipt_data->money,
                      (unsigned long)(receipt_data->liter_milliliters / 1000U),
                      (unsigned long)(receipt_data->liter_milliliters % 1000U),
@@ -1435,13 +1487,115 @@ static void push_msg_to_broker(void *arg) {
     }
 }
 
+static const char *rs232_link_status_name(rs232_link_status_t status)
+{
+    switch (status) {
+        case RS232_LINK_STATUS_OK:
+            return "ok";
+        case RS232_LINK_STATUS_ERROR:
+            return "error";
+        default:
+            return "unknown";
+    }
+}
+
+static rs232_link_check_result_t run_rs232_link_test(bool boot_test,
+                                                     char *mgd_out,
+                                                     size_t mgd_out_size)
+{
+    rs232_receipt_data_t receipt = {0};
+
+    if (payment_transaction_is_active()) {
+        ESP_LOGW(TAG, "RS232 T7 check skipped: payment transaction is active");
+        return boot_test ? RS232_LINK_CHECK_ERROR : RS232_LINK_CHECK_SKIPPED;
+    }
+
+    if (!boot_test) {
+        if (!virtual_keypad_is_enabled()) {
+            ESP_LOGI(TAG, "RS232 T7 check skipped: virtual keypad is disabled");
+            return RS232_LINK_CHECK_SKIPPED;
+        }
+
+        uint8_t input_level = input_switch_get_level();
+        if (input_level != RS232_LINK_TEST_INPUT_LEVEL) {
+            ESP_LOGI(TAG,
+                     "RS232 T7 check skipped: INPUT_SWITCH GPIO6=%u, required=%u",
+                     input_level,
+                     RS232_LINK_TEST_INPUT_LEVEL);
+            return RS232_LINK_CHECK_SKIPPED;
+        }
+    }
+
+    rs232_receipt_reset();
+    if (!virtual_keypad_request_last_receipt(boot_test, boot_test)) {
+        if (boot_test) {
+            ESP_LOGE(TAG, "RS232 health event: status=error, failed to issue boot T7");
+            return RS232_LINK_CHECK_ERROR;
+        }
+
+        ESP_LOGW(TAG, "RS232 T7 check skipped: virtual keypad is busy");
+        return RS232_LINK_CHECK_SKIPPED;
+    }
+
+    if (mgd_out != NULL && mgd_out_size > 0U) {
+        mgd_out[0] = '\0';
+    }
+
+    for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_LINK_TEST_TIMEOUT_MS;
+         elapsed_ms += RS232_LINK_TEST_POLL_MS) {
+        if (rs232_receipt_get(&receipt)) {
+            if (mgd_out != NULL && mgd_out_size > 0U) {
+                snprintf(mgd_out, mgd_out_size, "%s", receipt.mgd);
+            }
+            ESP_LOGI(TAG,
+                     "RS232 health event: status=ok MGD=%s money=%lu liter=%lu.%03lu price=%lu",
+                     receipt.mgd,
+                     (unsigned long)receipt.money,
+                     (unsigned long)(receipt.liter_milliliters / 1000U),
+                     (unsigned long)(receipt.liter_milliliters % 1000U),
+                     (unsigned long)receipt.price);
+            return RS232_LINK_CHECK_OK;
+        }
+
+        if (elapsed_ms < RS232_LINK_TEST_TIMEOUT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(RS232_LINK_TEST_POLL_MS));
+        }
+    }
+
+    ESP_LOGE(TAG,
+             "RS232 health event: status=error, no valid T7 response after %u ms",
+             (unsigned int)RS232_LINK_TEST_TIMEOUT_MS);
+    return RS232_LINK_CHECK_ERROR;
+}
+
 static void ping_tb(void *arg) {
     int stat;
     wifi_ap_record_t ap;
     char payment_msg_id[TBMQ_MSG_ID_LEN + 1];
+    char heartbeat_payload[512];
     int enable_virtual_key = 0;
+    bool boot_test = true;
+    rs232_link_status_t rs232_status = RS232_LINK_STATUS_UNKNOWN;
+    char rs232_mgd[sizeof(((rs232_receipt_data_t *)0)->mgd)] = {0};
     //wifi_ap_record_t ap;
     for(;;) {
+        xEventGroupWaitBits(mqtt_conn_event_group,
+                            MQTT_CONNECTED_EVENT,
+                            pdFALSE,
+                            pdTRUE,
+                            portMAX_DELAY);
+
+        rs232_link_check_result_t check_result = run_rs232_link_test(boot_test,
+                                                                     rs232_mgd,
+                                                                     sizeof(rs232_mgd));
+        boot_test = false;
+        if (check_result == RS232_LINK_CHECK_OK) {
+            rs232_status = RS232_LINK_STATUS_OK;
+        } else if (check_result == RS232_LINK_CHECK_ERROR) {
+            rs232_status = RS232_LINK_STATUS_ERROR;
+        }
+
+        const char *check_name = check_result == RS232_LINK_CHECK_SKIPPED ? "skipped" : "tested";
         //esp_wifi_sta_get_ap_info(&ap);
         //printf("Free heap size: %d bytes\n", esp_get_minimum_free_heap_size());
  
@@ -1449,9 +1603,9 @@ static void ping_tb(void *arg) {
         esp_wifi_sta_get_ap_info(&ap);
         enable_virtual_key = virtual_keypad_is_enabled() ? 1 : 0;
         if (get_active_payment_msg_id(payment_msg_id, sizeof(payment_msg_id))) {
-            snprintf(payload,
-                     sizeof(payload),
-                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u}",
+            snprintf(heartbeat_payload,
+                     sizeof(heartbeat_payload),
+                     "{\"ts\":%lld,\"msg_id\":\"%s\",\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u,\"rs232_status\":\"%s\",\"rs232_check\":\"%s\",\"MGD\":\"%s\"}",
                      protocol_timestamp_seconds(),
                      payment_msg_id,
                      deviceID,
@@ -1460,11 +1614,14 @@ static void ping_tb(void *arg) {
                      ap.rssi,
                      enable_virtual_key,
                      (unsigned int)u8FwVerion,
-                     (unsigned int)u16CurPrice);
+                     (unsigned int)u16CurPrice,
+                     rs232_link_status_name(rs232_status),
+                     check_name,
+                     rs232_mgd);
         } else {
-            snprintf(payload,
-                     sizeof(payload),
-                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u}",
+            snprintf(heartbeat_payload,
+                     sizeof(heartbeat_payload),
+                     "{\"ts\":%lld,\"DevID\":\"%s\",\"fuel_type\":\"%s\",\"keep_alive\":%d,\"RSSI\":%d,\"enable_virtual_key\":%d,\"version\":%u,\"price\":%u,\"rs232_status\":\"%s\",\"rs232_check\":\"%s\",\"MGD\":\"%s\"}",
                      protocol_timestamp_seconds(),
                      deviceID,
                      "diesel",
@@ -1472,9 +1629,12 @@ static void ping_tb(void *arg) {
                      ap.rssi,
                      enable_virtual_key,
                      (unsigned int)u8FwVerion,
-                     (unsigned int)u16CurPrice);
+                     (unsigned int)u16CurPrice,
+                     rs232_link_status_name(rs232_status),
+                     check_name,
+                     rs232_mgd);
         }
-        stat = push_heartbeat_msg(payload,strlen(payload));
+        stat = push_heartbeat_msg(heartbeat_payload, strlen(heartbeat_payload));
         if (stat >= 0) {
             ESP_LOGI(TAG, "Ping MSG published, msg_id=%d", stat);
         } else {
@@ -1538,6 +1698,6 @@ void FD_wifi_mqtt_config(void)
     ESP_LOGI(TAG, "RS232 config done\n");
     virtual_keypad_boot_clear();
     xTaskCreate(push_msg_to_broker, "push_msg_to_broker", 4096, NULL, 5, NULL);
-    xTaskCreate(ping_tb, "ping_tb", 4096, NULL, 5, NULL);
+    xTaskCreate(ping_tb, "ping_tb", PING_TASK_STACK_SIZE, NULL, 5, NULL);
     ota_start_github_version_check();
 }
