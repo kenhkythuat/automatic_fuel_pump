@@ -34,7 +34,7 @@ extern "C"
 #define DEFAULT_DEVICE_ID "node_pay_001"
 #define DEFAULT_GW_PAY_ID "gw_pay_001"
 #define DEFAULT_MQTT_CLIENT_ID "node_qr_001"
-#define DEFAULT_FW_VERSION 20
+#define DEFAULT_FW_VERSION 21
 #define DEFAULT_PRICE 10000
 
 uint8_t operationMode; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE and OTA_MODE

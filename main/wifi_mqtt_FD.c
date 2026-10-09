@@ -37,7 +37,7 @@
 #define TBMQ_MSG_ID_LEN 32
 #define TBMQ_TOPIC_MAX_LEN 128
 #define VIRTUAL_KEYPAD_TASK_STACK_SIZE 6144
-#define RS232_RECEIPT_WAIT_MS 2000
+#define RS232_RECEIPT_WAIT_MS 5000
 #define RS232_RECEIPT_POLL_MS 50
 #define PAYMENT_RECEIPT_QUEUE_LENGTH 2
 #define PAYMENT_RECEIPT_TASK_STACK_SIZE 4096
@@ -1291,6 +1291,52 @@ static void payment_receipt_task(void *arg)
                                              false,
                                              "RS232 receipt");
         }
+    }
+}
+
+void payment_input_switch_publish_active_event(void)
+{
+    char msg_id[TBMQ_MSG_ID_LEN + 1] = {0};
+    char event_payload[160];
+    bool should_publish = false;
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    }
+
+    if (active_payment_active &&
+        active_payment_input_started &&
+        active_payment_has_msg_id) {
+        snprintf(msg_id, sizeof(msg_id), "%s", active_payment_msg_id);
+        should_publish = true;
+    }
+
+    if (payment_ctx_sem != NULL) {
+        xSemaphoreGive(payment_ctx_sem);
+    }
+
+    if (!should_publish) {
+        ESP_LOGD(TAG,
+                 "INPUT_SWITCH ACTIVE event ignored: no active payment with msg_id");
+        return;
+    }
+
+    snprintf(event_payload,
+             sizeof(event_payload),
+             "{\"ts\":%lld,\"event\":\"input_switch\",\"input_switch\":1,\"msg_id\":\"%s\"}",
+             protocol_timestamp_seconds(),
+             msg_id);
+
+    int stat = push_completion_event(event_payload, strlen(event_payload));
+    if (stat >= 0) {
+        ESP_LOGI(TAG,
+                 "Payment INPUT_SWITCH ACTIVE event published, msg_id=%s mqtt_msg_id=%d",
+                 msg_id,
+                 stat);
+    } else {
+        ESP_LOGW(TAG,
+                 "Payment INPUT_SWITCH ACTIVE event publish failed, msg_id=%s",
+                 msg_id);
     }
 }
 

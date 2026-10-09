@@ -1406,6 +1406,9 @@ static void input_switch_task(void *arg)
         ESP_LOGI(TAG, "INPUT_SWITCH task stack free before payment update=%u",
                  (unsigned int)uxTaskGetStackHighWaterMark(NULL));
         payment_input_switch_update(current_level);
+        if (last_level == 0 && current_level != 0) {
+            payment_input_switch_publish_active_event();
+        }
         ESP_LOGI(TAG, "INPUT_SWITCH task stack free after payment update=%u",
                  (unsigned int)uxTaskGetStackHighWaterMark(NULL));
         last_level = current_level;

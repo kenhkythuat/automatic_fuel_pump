@@ -76,6 +76,7 @@ void keypad_master_scan_resume_after_virtual_keypad(void);
 void keypad_master_scan_disable_for_external_physical_keypad(void);
 void keypad_master_scan_enable_for_virtual_keypad(void);
 void payment_input_switch_update(uint8_t level);
+void payment_input_switch_publish_active_event(void);
 bool payment_control_switch_can_follow_input(void);
 void payment_set_qr_money_keypad_done(void);
 void input_switch_refresh_control_switch(void);
