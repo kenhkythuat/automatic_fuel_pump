@@ -1,6 +1,6 @@
 {
-  "version": "1.0.19",
-  "build": 19,
+  "version": "1.0.20",
+  "build": 20,
   "target": "esp32s3",
   "force": false,
   "firmware_url": "https://raw.githubusercontent.com/kenhkythuat/automatic_fuel_pump/read_rs232_printer/releases/esp32s3/atc_wifi_fw.bin",

@@ -18,10 +18,6 @@
 #include <esp_event.h>
 #include <nvs_flash.h>
 
-#include "esp_http_client.h"
-#include "esp_https_ota.h"
-#include "esp_ota_ops.h"
-
 //#include <wifi_provisioning/manager.h>
 #include <app_common_interfaces.h>
 
@@ -91,8 +87,6 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 #define WIFI_AP_TIMEOUT  120000/portTICK_PERIOD_MS //ms
 extern void wifi_sta_main(void)
 {
-    const esp_partition_t *next_partition;
-    esp_err_t err;
     char wifi_ssid[33];
     char wifi_password[65];
     bool has_saved_wifi = wifi_config_load_credentials(wifi_ssid,
@@ -143,7 +137,7 @@ extern void wifi_sta_main(void)
     /* Wait for Wi-Fi connection */
     int ret=xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, false, true, WIFI_AP_TIMEOUT);
     ESP_LOGI(TAG, "Wifi return : %d",ret);
-    if(ret==0) //timeout occurs should return to main boot partition (LORA)
+    if(ret==0)
     {
         if (wifi_config_portal_is_active()) {
             ESP_LOGW(TAG, "WiFi connect timeout while config portal is active, waiting for user save");
@@ -153,11 +147,15 @@ extern void wifi_sta_main(void)
             return;
         }
 
-        next_partition = esp_ota_get_next_update_partition(NULL);
-        err = esp_ota_set_boot_partition(next_partition);
-        ESP_ERROR_CHECK(err);
-        ESP_LOGE(TAG, "Wifi AP not found, reboot to main partition\n");
-        esp_restart();
+        /*
+         * Never change the OTA boot partition because Wi-Fi is unavailable.
+         * esp_ota_get_next_update_partition() selects the partition intended
+         * for the next OTA write; it may still contain an older firmware.
+         * The Wi-Fi event handler keeps retrying STA connection, and the
+         * configuration button remains available for entering AP mode.
+         */
+        ESP_LOGW(TAG,
+                 "WiFi connection timed out; keep current firmware and continue reconnecting");
     }
     else
     {
