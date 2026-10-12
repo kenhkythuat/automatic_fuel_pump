@@ -29,6 +29,7 @@ static SemaphoreHandle_t set_price_task_sem;
 #define VIRTUAL_KEYPAD_SWEEP_PERIOD_MS 200
 #define VIRTUAL_KEYPAD_BOOT_CLEAR_DELAY_MS 1000
 #define VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT 3
+#define VIRTUAL_KEYPAD_BOOT_COMMAND "TP031EC"
 #define VIRTUAL_KEYPAD_ADDR_SETTLE_MS 20
 #define VIRTUAL_KEYPAD_SEQUENCE_SETTLE_MS 120
 #define ORDER_CMD_SIZE 10
@@ -399,6 +400,9 @@ void virtual_keypad_boot_clear(void)
                  (unsigned int)VIRTUAL_KEYPAD_BOOT_CLEAR_COUNT);
         (void)press_key('C');
     }
+
+    ESP_LOGI(TAG, "Boot keypad command: %s", VIRTUAL_KEYPAD_BOOT_COMMAND);
+    press_key_string(VIRTUAL_KEYPAD_BOOT_COMMAND);
 
     virtual_keypad_idle();
     if (restore_external_physical) {
