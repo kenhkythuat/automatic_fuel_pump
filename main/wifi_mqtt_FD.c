@@ -45,6 +45,10 @@
 #define PING_TASK_STACK_SIZE 6144
 #define RS232_LINK_TEST_TIMEOUT_MS 5000
 #define RS232_LINK_TEST_POLL_MS 50
+#define PAYMENT_HISTORY_NVS_NAMESPACE "nodeconfig"
+#define PAYMENT_HISTORY_TIME_KEY "lastTxnTime"
+#define PAYMENT_HISTORY_MONEY_KEY "lastTxnMoney"
+#define PAYMENT_HISTORY_LITER_KEY "lastTxnLiter"
 /* Required explicitly by the hardware workflow: run the periodic T7 test
  * only while INPUT_SWITCH GPIO6 reads high. */
 #define RS232_LINK_TEST_INPUT_LEVEL 0
@@ -211,6 +215,114 @@ static void setNewPrice(uint16_t u16NewPrice)
     err=nvs_commit(nodeconfig_hdl);
     ESP_ERROR_CHECK(err);
     nvs_close(nodeconfig_hdl);
+}
+
+static bool load_last_published_receipt(rs232_receipt_data_t *receipt)
+{
+    nvs_handle_t nvs_handle = 0;
+    size_t time_size;
+    esp_err_t err;
+
+    if (receipt == NULL) {
+        return false;
+    }
+
+    memset(receipt, 0, sizeof(*receipt));
+    err = nvs_open(PAYMENT_HISTORY_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    time_size = sizeof(receipt->transaction_time);
+    err = nvs_get_str(nvs_handle,
+                      PAYMENT_HISTORY_TIME_KEY,
+                      receipt->transaction_time,
+                      &time_size);
+    if (err == ESP_OK) {
+        err = nvs_get_u32(nvs_handle,
+                          PAYMENT_HISTORY_MONEY_KEY,
+                          &receipt->money);
+    }
+    if (err == ESP_OK) {
+        err = nvs_get_u32(nvs_handle,
+                          PAYMENT_HISTORY_LITER_KEY,
+                          &receipt->liter_milliliters);
+    }
+
+    nvs_close(nvs_handle);
+    return err == ESP_OK && receipt->transaction_time[0] != '\0';
+}
+
+static bool receipt_was_already_published(const rs232_receipt_data_t *receipt)
+{
+    rs232_receipt_data_t previous = {0};
+
+    if (receipt == NULL || receipt->transaction_time[0] == '\0' ||
+        !load_last_published_receipt(&previous)) {
+        return false;
+    }
+
+    if (strcmp(previous.transaction_time, receipt->transaction_time) != 0) {
+        return false;
+    }
+
+    ESP_LOGW(TAG,
+             "Reject duplicate RS232 receipt: time=%s stored_money=%lu stored_liter=%lu.%03lu received_money=%lu received_liter=%lu.%03lu",
+             receipt->transaction_time,
+             (unsigned long)previous.money,
+             (unsigned long)(previous.liter_milliliters / 1000U),
+             (unsigned long)(previous.liter_milliliters % 1000U),
+             (unsigned long)receipt->money,
+             (unsigned long)(receipt->liter_milliliters / 1000U),
+             (unsigned long)(receipt->liter_milliliters % 1000U));
+    return true;
+}
+
+static void save_last_published_receipt(const rs232_receipt_data_t *receipt)
+{
+    nvs_handle_t nvs_handle = 0;
+    esp_err_t err;
+
+    if (receipt == NULL || receipt->transaction_time[0] == '\0') {
+        ESP_LOGE(TAG, "Cannot save published receipt without transaction time");
+        return;
+    }
+
+    err = nvs_open(PAYMENT_HISTORY_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs_handle,
+                          PAYMENT_HISTORY_TIME_KEY,
+                          receipt->transaction_time);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u32(nvs_handle,
+                          PAYMENT_HISTORY_MONEY_KEY,
+                          receipt->money);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u32(nvs_handle,
+                          PAYMENT_HISTORY_LITER_KEY,
+                          receipt->liter_milliliters);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs_handle);
+    }
+    if (nvs_handle != 0) {
+        nvs_close(nvs_handle);
+    }
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Saved published receipt to NVS: time=%s money=%lu liter=%lu.%03lu",
+                 receipt->transaction_time,
+                 (unsigned long)receipt->money,
+                 (unsigned long)(receipt->liter_milliliters / 1000U),
+                 (unsigned long)(receipt->liter_milliliters % 1000U));
+    } else {
+        ESP_LOGE(TAG,
+                 "Failed to save published receipt to NVS: %s",
+                 esp_err_to_name(err));
+    }
 }
 
 static void setDeviceID(char* m_deviceID) 
@@ -1191,6 +1303,15 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
     payment_completion_context_t completed = {0};
     char completion_payload[224];
 
+    if (!missing_receipt && receipt_data != NULL &&
+        receipt_was_already_published(receipt_data)) {
+        ESP_LOGW(TAG,
+                 "Payment completion from %s ignored: RS232 transaction time %s was already published",
+                 source != NULL ? source : "unknown",
+                 receipt_data->transaction_time);
+        return false;
+    }
+
     if (!claim_active_payment_context(&completed)) {
         ESP_LOGD(TAG,
                  "Payment completion from %s ignored: no active transaction",
@@ -1200,8 +1321,9 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
 
     if (!missing_receipt && receipt_data != NULL) {
         ESP_LOGI(TAG,
-                 "Use RS232 receipt immediately: MGD=%s money=%lu liter=%lu.%03lu price=%lu",
+                 "Use RS232 receipt immediately: MGD=%s time=%s money=%lu liter=%lu.%03lu price=%lu",
                  receipt_data->mgd,
+                 receipt_data->transaction_time,
                  (unsigned long)receipt_data->money,
                  (unsigned long)(receipt_data->liter_milliliters / 1000U),
                  (unsigned long)(receipt_data->liter_milliliters % 1000U),
@@ -1257,6 +1379,10 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
              completion_payload);
     int stat = push_completion_event(completion_payload, strlen(completion_payload));
     ESP_LOGI(TAG, "completion event publish stat=%d", stat);
+
+    if (stat >= 0 && !missing_receipt && receipt_data != NULL) {
+        save_last_published_receipt(receipt_data);
+    }
 
     if (stat >= 0 && !missing_receipt && receipt_data != NULL &&
         virtual_keypad_is_enabled()) {
@@ -1348,6 +1474,7 @@ void payment_input_switch_update(uint8_t level)
     bool has_payment = false;
     bool should_check_receipt = false;
     bool should_reset_receipt = false;
+    bool receipt_checked = false;
 
     completed_msg_id[0] = '\0';
 
@@ -1401,14 +1528,76 @@ void payment_input_switch_update(uint8_t level)
 
     for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
          elapsed_ms += RS232_RECEIPT_POLL_MS) {
-        if (rs232_receipt_get(&receipt_data)) {
+        if (!receipt_checked && rs232_receipt_get(&receipt_data)) {
+            receipt_checked = true;
             /* Usually the RS232 queue task has already sent this event before
              * the handle is returned.  Calling the common function is safe:
              * the atomic context claim prevents duplicate publication. */
-            (void)publish_payment_completion(&receipt_data,
-                                             false,
-                                             "INPUT_SWITCH receipt fallback");
+            if (publish_payment_completion(&receipt_data,
+                                           false,
+                                           "INPUT_SWITCH receipt fallback")) {
+                return;
+            }
+
+            if (!payment_transaction_is_active()) {
+                return;
+            }
+
+            /* The receipt is still the last transaction already stored in
+             * NVS.  Do not claim the waiting payment; retry using T7 below. */
+            break;
+        }
+
+        if (elapsed_ms < RS232_RECEIPT_WAIT_MS) {
+            vTaskDelay(pdMS_TO_TICKS(RS232_RECEIPT_POLL_MS));
+        }
+    }
+
+    if (!payment_transaction_is_active()) {
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "No new valid RS232 receipt after %u ms; request latest transaction with payment recovery T7",
+             (unsigned int)RS232_RECEIPT_WAIT_MS);
+
+    /* This T7 belongs to payment recovery, not to the periodic RS232 health
+     * check.  Start from an empty collector so an incomplete first response
+     * cannot be combined with the T7 receipt. */
+    rs232_receipt_reset();
+    if (!virtual_keypad_request_last_receipt(true, true)) {
+        ESP_LOGE(TAG,
+                 "Payment recovery T7 could not be issued; still wait %u ms for RS232 data",
+                 (unsigned int)RS232_RECEIPT_WAIT_MS);
+    } else {
+        ESP_LOGI(TAG,
+                 "Payment recovery T7 issued; wait up to %u ms for a new receipt",
+                 (unsigned int)RS232_RECEIPT_WAIT_MS);
+    }
+
+    memset(&receipt_data, 0, sizeof(receipt_data));
+    receipt_checked = false;
+    for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
+         elapsed_ms += RS232_RECEIPT_POLL_MS) {
+        if (!payment_transaction_is_active()) {
             return;
+        }
+
+        if (!receipt_checked && rs232_receipt_get(&receipt_data)) {
+            receipt_checked = true;
+            if (publish_payment_completion(&receipt_data,
+                                           false,
+                                           "payment recovery T7")) {
+                return;
+            }
+
+            if (!payment_transaction_is_active()) {
+                return;
+            }
+
+            ESP_LOGW(TAG,
+                     "Payment recovery T7 returned no new transaction: time=%s",
+                     receipt_data.transaction_time);
         }
 
         if (elapsed_ms < RS232_RECEIPT_WAIT_MS) {
@@ -1418,7 +1607,7 @@ void payment_input_switch_update(uint8_t level)
 
     (void)publish_payment_completion(NULL,
                                      true,
-                                     "INPUT_SWITCH timeout");
+                                     "payment recovery T7 timeout");
 }
 
 static int push_special_action_msg(char *msg_payload, uint16_t msg_len) {

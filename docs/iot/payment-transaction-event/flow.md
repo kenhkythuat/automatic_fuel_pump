@@ -58,14 +58,16 @@ flowchart TD
     G --> H[Gửi completed thành công]
     F -->|GPIO6 1→0| I[Chờ RS232 tối đa 7 giây]
     I -->|Có hóa đơn hợp lệ| G
-    I -->|Hết 7 giây| J[Claim context]
-    J --> K[Gửi completed lỗi missing_rs232_receipt]
+    I -->|Hết 7 giây| J[Reset collector và nhấn T7]
+    J -->|T7 trả hóa đơn có Thoi gian mới| G
+    J -->|Không có hóa đơn mới sau thêm 7 giây| K[Claim context]
+    K --> M[Gửi completed lỗi missing_rs232_receipt]
     B -->|Cancel đúng msg_id| L[Xóa context và nhấn C]
     C -->|Cancel đúng msg_id| L
     D -->|Cancel đúng msg_id| L
     E -->|Cancel đúng msg_id| L
     H --> A
-    K --> A
+    M --> A
     L --> A
 ```
 
@@ -105,8 +107,15 @@ sequenceDiagram
     alt RS232 hợp lệ trong thời gian chờ
         P-->>E: Hóa đơn RS232
         E-->>S: completed thành công
-    else Không có hóa đơn hợp lệ
-        E-->>S: completed + missing_rs232_receipt
+    else Không có hóa đơn mới hợp lệ
+        E->>E: Reset collector và nhấn T7
+        E->>E: Chờ thêm tối đa 7000 ms
+        alt T7 trả Thoi gian khác lastTxnTime trong NVS
+            E-->>S: completed thành công
+            E->>E: Lưu time + money + liter mới vào NVS
+        else T7 timeout, invalid hoặc trả lại giao dịch cũ
+            E-->>S: completed + missing_rs232_receipt
+        end
     end
 ```
 

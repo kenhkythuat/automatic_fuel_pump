@@ -40,6 +40,7 @@ typedef struct {
     uint32_t liter_milliliters;
     uint32_t price;
     char mgd[16];
+    char transaction_time[24];
 } rs232_receipt_data_t;
 extern QueueHandle_t uplink_queue;
 

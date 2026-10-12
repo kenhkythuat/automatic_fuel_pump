@@ -15,8 +15,10 @@
 | GPIO6 không từng ACTIVE | `active_payment_input_started=false` | Không cho RS232 claim giao dịch | `Payment completion ... ignored` | Context vẫn chờ/cancel |
 | GPIO6 cạnh `0→1`, không có context | Không có active payment/msg_id | Không gửi input-switch event | `INPUT_SWITCH ACTIVE event ignored` | Không đổi payment state |
 | GPIO6 đã là `1` từ trước | Đọc lại sau keypad done | Đánh dấu started nhưng không phát event cạnh | Log `already ACTIVE` | Giao dịch vẫn hợp lệ |
-| RS232 thiếu một trường | Không parse đủ MGD, money, liter, price | Chưa đặt receipt ready | Có raw ASCII nhưng không có `receipt parsed` | Tiếp tục chờ |
-| RS232 đến muộn sau GPIO6 IDLE | Chưa ready trong 7000 ms | Gửi completed lỗi | `missing_rs232_receipt` | Context bị claim và xóa |
+| RS232 thiếu một trường | Không parse đủ MGD, Thoi gian, money, liter, price | Chưa đặt receipt ready | Có raw ASCII nhưng không có `receipt parsed` | Chờ 7 giây rồi thử T7 |
+| RS232 chưa đến sau GPIO6 IDLE | Chưa ready trong 7000 ms đầu | Reset collector, nhấn T7 và chờ thêm 7000 ms | Log `payment recovery T7` | Giữ nguyên context |
+| T7 trả hóa đơn cũ | `Thoi gian == lastTxnTime` trong NVS | Không claim giao dịch | `Reject duplicate RS232 receipt` | Chờ hết cửa sổ T7 rồi báo missing |
+| T7 không có hóa đơn mới | Không ready sau cửa sổ thứ hai | Gửi completed lỗi | `missing_rs232_receipt` | Context bị claim và xóa |
 | RS232 đến sau event timeout | Context đã bị xóa | Receipt có thể parse nhưng không tạo completed | `no active transaction` | Không phục hồi giao dịch cũ |
 | RS232 buffer đầy | Dài ≥ 2048 byte trước khi parse | Xóa phần hóa đơn chưa hoàn chỉnh | `RS232 receipt buffer full` | Có thể dẫn tới timeout |
 | Queue receipt đầy | Queue độ dài 2 không nhận thêm được | Bỏ notification mới | `RS232 receipt notification queue is full` | Fallback GPIO6 vẫn có thể đọc receipt ready |
@@ -39,7 +41,9 @@ Lỗi chỉ được tạo khi:
 active payment tồn tại
 AND payment đã từng ACTIVE
 AND GPIO6 chuyển về 0
-AND không parse được hóa đơn hợp lệ trong 7000 ms
+AND không parse được hóa đơn mới trong 7000 ms đầu
+AND đã thử payment recovery T7
+AND không parse được hóa đơn có Thoi gian mới trong 7000 ms tiếp theo
 ```
 
 ### Nguyên nhân khả dĩ
@@ -48,7 +52,7 @@ AND không parse được hóa đơn hợp lệ trong 7000 ms
 - Dữ liệu đến sau 7 giây.
 - RX GPIO11, baudrate, GND hoặc mạch chuyển mức có vấn đề.
 - Chuỗi thay đổi tên trường hoặc kiểu dấu phân cách.
-- Hóa đơn thiếu `MGD`, `Thanh tien`, `So lit` hoặc `Don gia`.
+- Hóa đơn thiếu `MGD`, `Thoi gian`, `Thanh tien`, `So lit` hoặc `Don gia`.
 - Buffer bị tràn và reset.
 
 ### Cách debug
@@ -63,7 +67,7 @@ Có [RS232 RX ASCII] nhưng không có RS232 receipt parsed
 → dữ liệu không thỏa parser.
 
 RS232 receipt parsed xuất hiện sau missing_rs232_receipt
-→ timeout 7 giây vẫn ngắn hoặc dữ liệu phát quá muộn.
+→ cả cửa sổ ban đầu và cửa sổ T7 đã hết trước khi dữ liệu hoàn chỉnh.
 ```
 
 ## 3. Race condition đã được kiểm soát
@@ -127,9 +131,9 @@ Khóa đối soát hóa đơn:
 
 Event này chỉ phát tại cạnh GPIO6 `0→1`. Nếu MQTT publish thất bại, firmware không phát lại ở vòng sau. Nếu broker giao lặp do QoS 1, backend phải dedupe.
 
-### 4.6 Telemetry T7 không phải event giao dịch
+### 4.6 Phân biệt T7 health-check và T7 phục hồi giao dịch
 
-T7 là kiểm tra liên kết RS232 và lấy hóa đơn gần nhất. Khi có payment active, T7 được bỏ qua. `MGD` trong telemetry có thể là kết quả kiểm tra gần nhất và không được dùng thay cho MGD của event `completed`.
+T7 health-check định kỳ dùng để kiểm tra liên kết RS232 và bị bỏ qua khi có payment active. Riêng T7 phục hồi giao dịch chỉ được gọi sau khi GPIO6 đã về IDLE và cửa sổ chờ hóa đơn đầu tiên hết hạn; kết quả có `Thoi gian` mới được dùng để hoàn tất chính payment đang chờ. `MGD` trong telemetry health-check vẫn không được dùng thay cho MGD của event `completed`.
 
 ## 5. Checklist điều tra một giao dịch bị thiếu
 
@@ -140,6 +144,6 @@ T7 là kiểm tra liên kết RS232 và lấy hóa đơn gần nhất. Khi có p
 5. GPIO6 có được chấp nhận ACTIVE không?
 6. Có event `input_switch=1` cho cạnh mới không?
 7. Có raw ASCII trên RX GPIO11 không?
-8. Parser có log đủ MGD, money, liter, price không?
+8. Parser có log đủ MGD, Thoi gian, money, liter, price không?
 9. Event publish trả MQTT message ID hay `-1`?
 10. Backend có dedupe hoặc gom nhầm topic của nhiều node không?

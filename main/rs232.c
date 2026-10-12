@@ -307,6 +307,64 @@ static bool rs232_receipt_parse_mgd(char *mgd_out, size_t mgd_out_size)
     return true;
 }
 
+static bool rs232_receipt_parse_transaction_time(char *time_out, size_t time_out_size)
+{
+    const char *field = strstr(rs232_receipt_buffer, "Thoi gian");
+    const char *cursor;
+    size_t time_length = 0;
+    unsigned int colon_count = 0;
+    unsigned int slash_count = 0;
+    bool date_separator_seen = false;
+
+    if (field == NULL || time_out == NULL || time_out_size < 2U) {
+        return false;
+    }
+
+    cursor = strchr(field + strlen("Thoi gian"), ':');
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor++;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+
+    while (*cursor != '\0') {
+        char ch = *cursor;
+
+        if (ch >= '0' && ch <= '9') {
+            /* Accepted below. */
+        } else if (ch == ':' && slash_count == 0U) {
+            colon_count++;
+        } else if (ch == '/') {
+            slash_count++;
+        } else if ((ch == ' ' || ch == '\t') &&
+                   colon_count == 2U &&
+                   slash_count == 0U &&
+                   !date_separator_seen) {
+            date_separator_seen = true;
+            ch = ' ';
+        } else {
+            break;
+        }
+
+        if (time_length + 1U >= time_out_size) {
+            return false;
+        }
+        time_out[time_length++] = ch;
+        cursor++;
+    }
+
+    if (time_length == 0U || colon_count != 2U || slash_count != 2U ||
+        !date_separator_seen) {
+        return false;
+    }
+
+    time_out[time_length] = '\0';
+    return true;
+}
+
 static bool rs232_receipt_parse_grouped_uint(const char *label, uint32_t *value_out)
 {
     const char *field = strstr(rs232_receipt_buffer, label);
@@ -407,6 +465,7 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     uint32_t liter_milliliters = 0;
     uint32_t price = 0;
     char mgd[sizeof(rs232_receipt_result.mgd)] = {0};
+    char transaction_time[sizeof(rs232_receipt_result.transaction_time)] = {0};
     rs232_receipt_data_t completed_receipt = {0};
     bool receipt_just_completed = false;
 
@@ -442,6 +501,8 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
     rs232_receipt_buffer[rs232_receipt_length] = '\0';
 
     if (rs232_receipt_parse_mgd(mgd, sizeof(mgd)) &&
+        rs232_receipt_parse_transaction_time(transaction_time,
+                                             sizeof(transaction_time)) &&
         rs232_receipt_parse_grouped_uint("Thanh tien", &money) &&
         rs232_receipt_parse_liter(&liter_milliliters) &&
         rs232_receipt_parse_grouped_uint("Don gia", &price)) {
@@ -452,13 +513,18 @@ static void rs232_receipt_feed(const uint8_t *data, int len)
                  sizeof(rs232_receipt_result.mgd),
                  "%s",
                  mgd);
+        snprintf(rs232_receipt_result.transaction_time,
+                 sizeof(rs232_receipt_result.transaction_time),
+                 "%s",
+                 transaction_time);
         rs232_receipt_ready = true;
         completed_receipt = rs232_receipt_result;
         receipt_just_completed = true;
 
         ESP_LOGI(TAG,
-                 "RS232 receipt parsed: MGD=%s money=%lu liter=%lu.%03lu price=%lu",
+                 "RS232 receipt parsed: MGD=%s time=%s money=%lu liter=%lu.%03lu price=%lu",
                  rs232_receipt_result.mgd,
+                 rs232_receipt_result.transaction_time,
                  (unsigned long)money,
                  (unsigned long)(liter_milliliters / 1000U),
                  (unsigned long)(liter_milliliters % 1000U),

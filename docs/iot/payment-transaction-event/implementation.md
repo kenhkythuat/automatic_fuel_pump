@@ -158,11 +158,12 @@ Nếu GPIO6 đã là `1` từ trước command, trạng thái đó vẫn đượ
 
 ### Bước 6: Nhận hóa đơn RS232 hợp lệ
 
-UART2 RX GPIO11 tích lũy ASCII vào buffer 2048 byte. Hóa đơn chỉ được đánh dấu `ready` khi parser lấy đủ cả bốn trường:
+UART2 RX GPIO11 tích lũy ASCII vào buffer 2048 byte. Hóa đơn chỉ được đánh dấu `ready` khi parser lấy đủ cả năm trường:
 
 | Trường RS232 | Kiểu nội bộ | Quy tắc |
 |---|---|---|
 | `MGD` | Chuỗi tối đa 15 ký tự số | Giữ số `0` ở đầu |
+| `Thoi gian` | Chuỗi tối đa 23 ký tự | Dùng nhận diện giao dịch mới, ví dụ `08:34:25 13/07/26` |
 | `Thanh tien` | `uint32_t` | Bỏ dấu phân nhóm, lấy các chữ số trước `(` |
 | `So lit` | Millilít `uint32_t` | Chấp nhận `,` hoặc `.`; chuẩn hóa ba chữ số thập phân |
 | `Don gia` | `uint32_t` | Bỏ dấu phân nhóm, lấy các chữ số trước `(` |
@@ -171,6 +172,7 @@ Ví dụ:
 
 ```text
 MGD: 02687
+Thoi gian: 08:34:25 13/07/26
 Thanh tien: 30.000(vnd)
 So lit: 1,00(lit)
 Don gia: 30.000(d/l)
@@ -180,6 +182,7 @@ Kết quả nội bộ:
 
 ```text
 MGD = "02687"
+transaction_time = "08:34:25 13/07/26"
 money = 30000
 liter_milliliters = 1000
 price = 30000
@@ -205,6 +208,16 @@ Event thành công:
 
 Hóa đơn RS232 hợp lệ được phép hoàn tất giao dịch ngay, không cần chờ GPIO6 trở về `0`.
 
+Sau khi MQTT publish trả về thành công, firmware lưu giao dịch cuối vào namespace NVS `nodeconfig`:
+
+```text
+lastTxnTime  = Thoi gian
+lastTxnMoney = Thanh tien
+lastTxnLiter = So lit tính theo millilít
+```
+
+`Thoi gian` là trường quyết định hóa đơn mới hay trùng. Tiền và lít được lưu để debug/đối soát nhưng được phép giống giao dịch trước.
+
 ### Bước 8: Kết thúc qua GPIO6 nhưng chưa có RS232
 
 Nếu giao dịch đã bắt đầu và GPIO6 chuyển `1 → 0`, firmware chờ hóa đơn tối đa:
@@ -214,7 +227,25 @@ RS232_RECEIPT_WAIT_MS = 7000 ms
 RS232_RECEIPT_POLL_MS = 50 ms
 ```
 
-Nếu hóa đơn hợp lệ xuất hiện trong thời gian này, firmware gửi event thành công. Nếu hết 7 giây vẫn chưa có hóa đơn hợp lệ, firmware claim context và gửi:
+Nếu hóa đơn mới hợp lệ xuất hiện trong thời gian này, firmware gửi event thành công. Nếu hết 7 giây vẫn chưa có hóa đơn mới hợp lệ, firmware chưa báo lỗi mà chuyển sang bước phục hồi T7.
+
+### Bước 9: Phục hồi giao dịch bằng T7
+
+Firmware giữ nguyên payment context đang chờ và thực hiện:
+
+1. Reset RS232 receipt collector.
+2. Nhấn chuỗi phím ảo `T7` để yêu cầu trụ xuất giao dịch gần nhất.
+3. Chờ thêm tối đa 7000 ms, poll mỗi 50 ms.
+4. Parse đủ năm trường, bao gồm `Thoi gian`.
+5. Đọc tuple giao dịch cuối đã publish trong NVS.
+6. Chỉ chấp nhận hóa đơn khi `Thoi gian` khác `lastTxnTime`. `money` và `liter` được phép trùng.
+7. Nếu publish thành công, cập nhật tuple mới vào NVS.
+
+T7 ở bước này là luồng phục hồi payment, không phải luồng health-check RS232 định kỳ.
+
+### Bước 10: Chỉ báo lỗi sau khi T7 thất bại
+
+Nếu không phát được T7, T7 không trả dữ liệu, dữ liệu không đủ năm trường, hoặc T7 chỉ trả lại đúng `lastTxnTime`, firmware chờ hết cửa sổ 7 giây thứ hai rồi mới claim context và gửi:
 
 ```json
 {
@@ -238,7 +269,7 @@ Event kết quả chỉ được phát khi đồng thời có:
 2. Payment context chưa bị cancel hoặc claim bởi luồng khác.
 3. GPIO6 đã được chấp nhận ACTIVE ít nhất một lần.
 4a. Có hóa đơn RS232 hợp lệ; hoặc
-4b. GPIO6 đã về IDLE và hết thời gian chờ RS232 để phát kết quả lỗi.
+4b. GPIO6 đã về IDLE, hết 7 giây chờ ban đầu, đã thử T7 và hết thêm 7 giây mà vẫn không có hóa đơn mới để phát kết quả lỗi.
 ```
 
 Dữ liệu RS232 tự do khi không có giao dịch active hoặc trước khi giao dịch được đánh dấu started không được phép tạo event giao dịch.
@@ -297,12 +328,14 @@ completion event publish stat=...
 | T02 | GPIO6 đã là `1` trước command, phím ảo xong, RS232 hợp lệ | Không có event cạnh mới; vẫn có event `completed` thành công |
 | T03 | RS232 hợp lệ đến trước GPIO6 về `0` | Gửi `completed` ngay |
 | T04 | GPIO6 `1→0`, RS232 đến trong 7 giây | Gửi `completed` thành công |
-| T05 | GPIO6 `1→0`, không có RS232 sau 7 giây | Gửi `missing_rs232_receipt`, money/liter bằng 0 |
-| T06 | RS232 đến khi chưa có payment active | Không gửi event giao dịch |
-| T07 | RS232 đến trước khi GPIO6 từng ACTIVE | Không claim giao dịch |
-| T08 | Cancel đúng `msg_id` trước khi hoàn tất | Xóa context; không gửi `completed` cho giao dịch đó |
-| T09 | MQTT QoS 1 giao lặp event | Backend không tạo hai bản ghi cho cùng `{node_pay,msg_id,event}` |
-| T10 | Hai thiết bị có cùng MGD | Backend vẫn phân biệt bằng `node_pay` và `msg_id` |
+| T05 | GPIO6 `1→0`, không có RS232 trong 7 giây đầu, T7 trả hóa đơn mới | Gửi `completed` thành công và lưu tuple mới vào NVS |
+| T06 | GPIO6 `1→0`, không có RS232; T7 cũng timeout thêm 7 giây | Gửi `missing_rs232_receipt`, money/liter bằng 0 |
+| T07 | T7 trả cùng `Thoi gian` đã lưu nhưng money/liter giống hoặc khác | Xem là hóa đơn cũ; không hoàn tất, chờ hết timeout rồi báo missing |
+| T08 | RS232 đến khi chưa có payment active | Không gửi event giao dịch |
+| T09 | RS232 đến trước khi GPIO6 từng ACTIVE | Không claim giao dịch |
+| T10 | Cancel đúng `msg_id` trước khi hoàn tất | Xóa context; không gửi `completed` cho giao dịch đó |
+| T11 | MQTT QoS 1 giao lặp event | Backend không tạo hai bản ghi cho cùng `{node_pay,msg_id,event}` |
+| T12 | Hai thiết bị có cùng MGD | Backend vẫn phân biệt bằng `node_pay` và `msg_id` |
 
 ## 12. Giả định
 
