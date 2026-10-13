@@ -101,6 +101,7 @@ static bool active_payment_active;
 static bool active_payment_has_msg_id;
 static bool active_payment_input_started;
 static bool active_payment_money_keypad_done;
+static bool active_payment_input_event_published;
 cJSON *json_obj;
 char payload[512];
 //int currentPrice=0;
@@ -414,6 +415,7 @@ static void set_active_payment_context(const char *msg_id,
     active_payment_active = true;
     active_payment_input_started = false;
     active_payment_money_keypad_done = !virtual_keypad_is_enabled();
+    active_payment_input_event_published = false;
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
@@ -479,6 +481,7 @@ static void clear_active_payment_context(const char *completed_msg_id)
         active_payment_has_msg_id = false;
         active_payment_input_started = false;
         active_payment_money_keypad_done = false;
+        active_payment_input_event_published = false;
     }
 
     if (payment_ctx_sem != NULL) {
@@ -524,6 +527,7 @@ static bool claim_active_payment_context(payment_completion_context_t *context)
         active_payment_has_msg_id = false;
         active_payment_input_started = false;
         active_payment_money_keypad_done = false;
+        active_payment_input_event_published = false;
         claimed = true;
     }
 
@@ -588,6 +592,7 @@ void payment_set_qr_money_keypad_done(void)
             ESP_LOGI(TAG,
                      "Virtual keypad done while INPUT_SWITCH GPIO6 is already ACTIVE; accept current level as dispense start");
             payment_input_switch_update(current_input_level);
+            payment_input_switch_publish_active_event();
         }
 
         input_switch_refresh_control_switch();
@@ -899,6 +904,10 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
+        /* A previous cancel keeps this flag set so a delayed old payment task
+         * cannot resume after CC.  A newly accepted payment starts a fresh
+         * keypad transaction and explicitly clears it. */
+        virtual_keypad_set_payment_cancel_requested(false);
         BaseType_t task_created = xTaskCreate(enter_qr_price_by_vir_keypad,
                                               "enter_qr_money",
                                               VIRTUAL_KEYPAD_TASK_STACK_SIZE,
@@ -944,6 +953,7 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
+        virtual_keypad_set_payment_cancel_requested(false);
         BaseType_t task_created = xTaskCreate(enter_qr_litter_by_vir_keypad,
                                               "enter_qr_litter",
                                               VIRTUAL_KEYPAD_TASK_STACK_SIZE,
@@ -987,6 +997,16 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
+        /* Stop the active payment electrically before waiting for the keypad
+         * semaphore.  GPIO7 must remain LOW even when GPIO6 is still HIGH. */
+        virtual_keypad_set_payment_cancel_requested(true);
+        /* A valid cancel command is an emergency stop for whichever payment
+         * is active.  Its msg_id is still echoed in ACK, but cancellation is
+         * not allowed to leave a different active context driving GPIO7. */
+        clear_active_payment_context(NULL);
+        rs232_receipt_reset();
+        input_switch_force_control_switch_off("cancel_qr_money");
+
         BaseType_t task_created = xTaskCreate(cancel_qr_money_by_vir_keypad,
                                               "cancel_qr_money",
                                               VIRTUAL_KEYPAD_TASK_STACK_SIZE,
@@ -999,7 +1019,6 @@ static void handle_payment_command(const cJSON *root)
             return;
         }
 
-        clear_active_payment_context(msg_id);
         ESP_LOGI(TAG, "Payment command accepted: cmd=%s msg_id=%s", cmd, msg_id);
         publish_payment_ack(cmd, "ok", NULL, msg_id);
         return;
@@ -1432,8 +1451,11 @@ void payment_input_switch_publish_active_event(void)
 
     if (active_payment_active &&
         active_payment_input_started &&
-        active_payment_has_msg_id) {
+        active_payment_money_keypad_done &&
+        active_payment_has_msg_id &&
+        !active_payment_input_event_published) {
         snprintf(msg_id, sizeof(msg_id), "%s", active_payment_msg_id);
+        active_payment_input_event_published = true;
         should_publish = true;
     }
 
@@ -1443,7 +1465,7 @@ void payment_input_switch_publish_active_event(void)
 
     if (!should_publish) {
         ESP_LOGD(TAG,
-                 "INPUT_SWITCH ACTIVE event ignored: no active payment with msg_id");
+                 "INPUT_SWITCH ACTIVE event ignored: payment inactive, keypad pending, missing msg_id, or already published");
         return;
     }
 
@@ -1528,6 +1550,11 @@ void payment_input_switch_update(uint8_t level)
 
     for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
          elapsed_ms += RS232_RECEIPT_POLL_MS) {
+        if (!payment_transaction_is_active()) {
+            ESP_LOGI(TAG, "RS232 receipt wait stopped: payment was cancelled");
+            return;
+        }
+
         if (!receipt_checked && rs232_receipt_get(&receipt_data)) {
             receipt_checked = true;
             /* Usually the RS232 queue task has already sent this event before

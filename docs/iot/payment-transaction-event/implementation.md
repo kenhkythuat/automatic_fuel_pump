@@ -30,6 +30,8 @@ Nguồn hiện thực chính:
 | UART2 RX GPIO11 | Nhận chuỗi hóa đơn RS232 |
 | Bộ điều khiển trụ bơm | Nhận phím ảo, thực hiện bơm và xuất hóa đơn |
 
+Event `input_switch=1` chỉ được gửi một lần cho mỗi payment sau khi chuỗi phím ảo đã hoàn tất. Nếu GPIO6 đã lên `1` trong lúc nhập phím hoặc đã ở `1` trước đó, firmware lấy lại mức hiện tại ngay sau khi nhập xong, đánh dấu giao dịch bắt đầu và gửi event với `msg_id` của command. Nếu GPIO6 chuyển `0 → 1` sau khi nhập xong, task GPIO gửi cùng event tại cạnh lên.
+
 ## 3. MQTT topics
 
 Các ID được đọc từ NVS và đưa vào topic động.
@@ -278,14 +280,17 @@ Dữ liệu RS232 tự do khi không có giao dịch active hoặc trước khi 
 
 Command hiện tại dùng tên `cancel_qr_money` cho cả payment context tiền và lít.
 
-Nếu `msg_id` trùng context đang active:
+Khi nhận command cancel hợp lệ, `msg_id` được dùng để liên kết ACK; payment context đang active được hủy không phụ thuộc mức GPIO6:
 
-- tạo task nhấn phím ảo `C`;
+- đánh dấu dừng chuỗi nhập tiền/lít đang chạy ở ranh giới giữa hai lần nhấn phím;
 - xóa payment context;
+- reset collector RS232;
+- dừng timer điều khiển và ép GPIO7 về `0` ngay lập tức, không phụ thuộc GPIO6;
+- tạo task nhấn phím ảo `CC`;
 - gửi ACK cancel `ok`;
 - GPIO6 hoặc hóa đơn RS232 đến sau đó không tạo event `completed` cho context đã xóa.
 
-ACK cancel hiện chỉ xác nhận task cancel được tạo, không xác nhận phần cứng đã thực sự nhận phím `C`.
+ACK cancel hiện xác nhận task cancel `CC` được tạo; GPIO7 đã được ép xuống `0` trước ACK nhưng ACK không xác nhận phần cứng đã thực sự nhận đủ hai phím `C`.
 
 ## 8. Idempotency và tính duy nhất
 

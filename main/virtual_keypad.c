@@ -39,6 +39,7 @@ static SemaphoreHandle_t set_price_task_sem;
 #define MAPPING_TABLE_SIZE 8
 
 static bool virtual_keypad_external_physical_enabled;
+static volatile bool virtual_keypad_payment_cancel_requested;
 char order[ORDER_CMD_SIZE] = {'C','C','P','1', '2', '3', '4', '5', '6', 'E'};
 char alt_set_price_cmd[ALT_SET_PRICE_CMD_SIZE] = {'C','C','T', 'P', '0', '1', '2', 'E'};
 char alt_set_price_password[ALT_SET_PRICE_PASSWORD_SIZE] = {'1', '2', '3', '4', '5', '6','E'};
@@ -186,6 +187,14 @@ bool virtual_keypad_is_enabled(void)
 bool virtual_keypad_is_external_physical_enabled(void)
 {
     return virtual_keypad_external_physical_enabled;
+}
+
+void virtual_keypad_set_payment_cancel_requested(bool requested)
+{
+    virtual_keypad_payment_cancel_requested = requested;
+    ESP_LOGW(TAG,
+             "Virtual payment cancel request=%d",
+             requested ? 1 : 0);
 }
 
 static void psudoe_press_timed(uint8_t cluster, uint8_t pin, uint32_t press_ms, uint32_t gap_ms)
@@ -551,19 +560,31 @@ void change_price_by_vir_keypad(void *arg)
 void enter_qr_price_by_vir_keypad(void *arg)
 {
     char *amount = (char *)arg;
+    bool cancelled = false;
 
     virtual_keypad_sequence_begin("enter_qr_price");
     ESP_LOGI(TAG, "QR price input start: %s", amount);
 
-    press_key('$');
-    vTaskDelay(pdMS_TO_TICKS(700));
-    for (int i = 0; i < strlen(amount); i++)
-    {
+    if (!virtual_keypad_payment_cancel_requested) {
+        press_key('$');
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
+    for (int i = 0; i < strlen(amount); i++) {
+        if (virtual_keypad_payment_cancel_requested) {
+            cancelled = true;
+            break;
+        }
         press_key(amount[i]);
     }
-    press_key('E');
+    if (!virtual_keypad_payment_cancel_requested) {
+        press_key('E');
+    } else {
+        cancelled = true;
+    }
 
-    ESP_LOGI(TAG, "QR price input completed.\n\n");
+    ESP_LOGI(TAG,
+             "QR price input %s.\n\n",
+             cancelled ? "aborted by cancel request" : "completed");
     virtual_keypad_sequence_end("enter_qr_price");
     payment_set_qr_money_keypad_done();
     free(amount);
@@ -573,17 +594,34 @@ void enter_qr_price_by_vir_keypad(void *arg)
 void enter_qr_litter_by_vir_keypad(void *arg)
 {
     char *litter = (char *)arg;
+    bool cancelled = false;
 
     virtual_keypad_sequence_begin("enter_qr_litter");
     ESP_LOGI(TAG, "QR litter input start: %s", litter);
 
-    press_key('C');
-    press_key('L');
-    vTaskDelay(pdMS_TO_TICKS(700));
-    press_key_string(litter);
-    press_key('E');
+    if (!virtual_keypad_payment_cancel_requested) {
+        press_key('C');
+    }
+    if (!virtual_keypad_payment_cancel_requested) {
+        press_key('L');
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
+    for (int i = 0; i < strlen(litter); i++) {
+        if (virtual_keypad_payment_cancel_requested) {
+            cancelled = true;
+            break;
+        }
+        press_key(litter[i]);
+    }
+    if (!virtual_keypad_payment_cancel_requested) {
+        press_key('E');
+    } else {
+        cancelled = true;
+    }
 
-    ESP_LOGI(TAG, "QR litter input completed.\n\n");
+    ESP_LOGI(TAG,
+             "QR litter input %s.\n\n",
+             cancelled ? "aborted by cancel request" : "completed");
     virtual_keypad_sequence_end("enter_qr_litter");
     payment_set_qr_money_keypad_done();
     free(litter);
@@ -599,8 +637,9 @@ void cancel_qr_money_by_vir_keypad(void *arg)
     virtual_keypad_sequence_begin("cancel_qr_money");
     ESP_LOGI(TAG, "Cancel QR money after sequence begin, stack free=%u",
              (unsigned int)uxTaskGetStackHighWaterMark(NULL));
-    ESP_LOGI(TAG, "Cancel QR money start: press C");
+    ESP_LOGI(TAG, "Cancel QR money start: press CC");
 
+    press_key('C');
     press_key('C');
 
     ESP_LOGI(TAG, "Cancel QR money completed.\n\n");

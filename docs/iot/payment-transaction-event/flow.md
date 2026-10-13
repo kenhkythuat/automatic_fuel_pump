@@ -144,11 +144,13 @@ sequenceDiagram
     participant E as ESP32
     participant K as Virtual Keypad
 
-    S->>E: cancel_qr_money + cùng msg_id
+    S->>E: cancel_qr_money + msg_id hợp lệ
+    E->>E: Đánh dấu hủy chuỗi nhập đang chạy
+    E->>E: Xóa payment context đang active
+    E->>E: Reset RS232 collector, dừng timer và ép GPIO7=0
     E->>E: Tạo cancel task
-    E->>E: Xóa active payment context nếu msg_id khớp
     E-->>S: ACK cancel result=ok
-    E->>K: Nhấn C
+    E->>K: Nhấn CC
     Note over E: RS232 hoặc GPIO6 đến sau không còn context để tạo completed
 ```
 

@@ -1435,6 +1435,20 @@ void input_switch_schedule_virtual_control_off(uint32_t delay_ms)
              (unsigned long)delay_ms);
 }
 
+void input_switch_force_control_switch_off(const char *reason)
+{
+    if (control_switch_off_timer != NULL) {
+        (void)xTimerStop(control_switch_off_timer, 0);
+    }
+
+    gpio_set_level(CONTROL_SWITCH_PIN, 0);
+    ESP_LOGW(TAG,
+             "CONTROL_SWITCH GPIO%d forced OFF immediately (%s, input=%u)",
+             CONTROL_SWITCH_PIN,
+             reason != NULL ? reason : "requested",
+             (unsigned int)gpio_get_level(INPUT_SWITCH_PIN));
+}
+
 static void input_switch_task(void *arg)
 {
     (void)arg;

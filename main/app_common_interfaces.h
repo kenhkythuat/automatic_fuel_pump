@@ -82,6 +82,7 @@ bool payment_control_switch_can_follow_input(void);
 void payment_set_qr_money_keypad_done(void);
 void input_switch_refresh_control_switch(void);
 void input_switch_schedule_virtual_control_off(uint32_t delay_ms);
+void input_switch_force_control_switch_off(const char *reason);
 void keypad_password_handle_key_event(char key, bool pressed);
 bool keypad_password_is_unlocked(void);
 
@@ -98,6 +99,7 @@ void change_price_by_vir_keypad(void *arg);
 void enter_qr_price_by_vir_keypad(void *arg);
 void enter_qr_litter_by_vir_keypad(void *arg);
 void cancel_qr_money_by_vir_keypad(void *arg);
+void virtual_keypad_set_payment_cancel_requested(bool requested);
 void end_session_by_vir_keypad(void *arg);
 
 // OTA function
