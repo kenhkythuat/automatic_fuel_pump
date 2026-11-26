@@ -1,5 +1,7 @@
 # Ngoại lệ và tình huống biên của giao dịch
 
+> Xử lý cancel, reboot và lỗi gửi hiện tại: [payment-delivery-recovery/exceptions.md](../payment-delivery-recovery/exceptions.md). Quy tắc cũ về bỏ hóa đơn sau cancel và không có persistence completed đã được thay thế.
+
 ## 1. Ma trận xử lý lỗi
 
 | Tình huống | Cách phát hiện | Xử lý hiện tại | Log/response | Ảnh hưởng trạng thái |

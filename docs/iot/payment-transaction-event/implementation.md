@@ -1,5 +1,7 @@
 # Nguyên tắc xác định và gửi sự kiện giao dịch
 
+> Cập nhật: phần cancel, persistence và xác nhận gửi MQTT được thay thế bởi [payment-delivery-recovery](../payment-delivery-recovery/implementation.md). Payment đã bắt đầu không bị xóa khi cancel; completed được lưu NVS và chỉ xóa sau PUBACK.
+
 ## 1. Mục đích
 
 Tài liệu này mô tả hành vi đang được triển khai trên ESP32 để:

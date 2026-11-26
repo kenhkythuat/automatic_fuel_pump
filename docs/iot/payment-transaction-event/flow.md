@@ -1,5 +1,7 @@
 # Luồng giao dịch và MQTT event
 
+> Luồng cancel và delivery mới: [payment-delivery-recovery/flow.md](../payment-delivery-recovery/flow.md). Các sơ đồ cancel xóa context ngay trong tài liệu này là mô tả cũ.
+
 ## 1. Luồng thành công chuẩn
 
 ```mermaid

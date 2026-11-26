@@ -3,6 +3,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "wifi_mqtt_FD.c"
+        "payment_journal.c"
         "wifi_sta.c"
         "ota_update.c"
         "virtual_keypad.c"

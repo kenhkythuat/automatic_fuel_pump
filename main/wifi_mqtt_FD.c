@@ -16,6 +16,7 @@
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "app_common_interfaces.h"
+#include "payment_journal.h"
 //#include "protocol_examples_common.h"
 
 #include "lwip/sockets.h"
@@ -102,11 +103,23 @@ static bool active_payment_has_msg_id;
 static bool active_payment_input_started;
 static bool active_payment_money_keypad_done;
 static bool active_payment_input_event_published;
+static bool active_payment_cancelled;
+static bool cancel_keypad_pending;
+static bool receipt_wait_running;
+static bool recovery_requested;
+static bool journal_ready;
+static bool payment_startup_ready;
+static uint16_t active_payment_price;
+static bool retained_receipt_pending;
+static rs232_receipt_data_t retained_receipt;
 cJSON *json_obj;
 char payload[512];
 //int currentPrice=0;
 
 static int publish_to_tbmq(const char *topic, const char *msg_payload, uint16_t msg_len);
+static void payment_wait_for_receipt(void);
+static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
+                                       bool missing_receipt, const char *source);
 
 static const char *safe_gw_pay_id(void)
 {
@@ -256,6 +269,7 @@ static bool load_last_published_receipt(rs232_receipt_data_t *receipt)
 
 static bool receipt_was_already_published(const rs232_receipt_data_t *receipt)
 {
+    if (receipt && payment_journal_receipt_seen(receipt->transaction_time)) return true;
     rs232_receipt_data_t previous = {0};
 
     if (receipt == NULL || receipt->transaction_time[0] == '\0' ||
@@ -277,53 +291,6 @@ static bool receipt_was_already_published(const rs232_receipt_data_t *receipt)
              (unsigned long)(receipt->liter_milliliters / 1000U),
              (unsigned long)(receipt->liter_milliliters % 1000U));
     return true;
-}
-
-static void save_last_published_receipt(const rs232_receipt_data_t *receipt)
-{
-    nvs_handle_t nvs_handle = 0;
-    esp_err_t err;
-
-    if (receipt == NULL || receipt->transaction_time[0] == '\0') {
-        ESP_LOGE(TAG, "Cannot save published receipt without transaction time");
-        return;
-    }
-
-    err = nvs_open(PAYMENT_HISTORY_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
-    if (err == ESP_OK) {
-        err = nvs_set_str(nvs_handle,
-                          PAYMENT_HISTORY_TIME_KEY,
-                          receipt->transaction_time);
-    }
-    if (err == ESP_OK) {
-        err = nvs_set_u32(nvs_handle,
-                          PAYMENT_HISTORY_MONEY_KEY,
-                          receipt->money);
-    }
-    if (err == ESP_OK) {
-        err = nvs_set_u32(nvs_handle,
-                          PAYMENT_HISTORY_LITER_KEY,
-                          receipt->liter_milliliters);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs_handle);
-    }
-    if (nvs_handle != 0) {
-        nvs_close(nvs_handle);
-    }
-
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG,
-                 "Saved published receipt to NVS: time=%s money=%lu liter=%lu.%03lu",
-                 receipt->transaction_time,
-                 (unsigned long)receipt->money,
-                 (unsigned long)(receipt->liter_milliliters / 1000U),
-                 (unsigned long)(receipt->liter_milliliters % 1000U));
-    } else {
-        ESP_LOGE(TAG,
-                 "Failed to save published receipt to NVS: %s",
-                 esp_err_to_name(err));
-    }
 }
 
 static void setDeviceID(char* m_deviceID) 
@@ -392,7 +359,20 @@ static bool parse_protocol_msg_id(const cJSON *root, char *msg_id_out, size_t ms
     return true;
 }
 
-static void set_active_payment_context(const char *msg_id,
+static bool persist_payment_locked(void)
+{
+    if (!journal_ready) return false;
+    payment_saved_t saved = {
+        .money = active_payment_money, .litter = active_payment_litter,
+        .price = active_payment_price, .type = active_payment_type,
+        .active = active_payment_active, .started = active_payment_input_started,
+        .cancelled = active_payment_cancelled,
+    };
+    snprintf(saved.msg_id, sizeof(saved.msg_id), "%s", active_payment_msg_id);
+    return payment_journal_save_active(&saved);
+}
+
+static bool set_active_payment_context(const char *msg_id,
                                        payment_command_type_t type,
                                        uint32_t money,
                                        uint32_t litter)
@@ -416,10 +396,16 @@ static void set_active_payment_context(const char *msg_id,
     active_payment_input_started = false;
     active_payment_money_keypad_done = !virtual_keypad_is_enabled();
     active_payment_input_event_published = false;
+    active_payment_cancelled = false;
+    active_payment_price = u16CurPrice;
+    bool saved = persist_payment_locked();
+    if (!saved) active_payment_active = false;
+    if (saved) input_switch_release_control_lock();
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
     }
+    return saved;
 }
 
 static bool get_active_payment_msg_id(char *msg_id_out, size_t msg_id_out_size)
@@ -463,6 +449,39 @@ static bool payment_transaction_is_active(void)
     return is_active;
 }
 
+void payment_cancel_keypad_done(void)
+{
+    xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    cancel_keypad_pending = false;
+    if (active_payment_active && active_payment_input_started && active_payment_cancelled) {
+        recovery_requested = true;
+        ESP_LOGW(TAG, "CANCEL_WAIT_RECEIPT: preserve original payment msg_id=%s", active_payment_msg_id);
+    }
+    xSemaphoreGive(payment_ctx_sem);
+}
+
+static void payment_recovery_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+        bool recover = recovery_requested && !cancel_keypad_pending && !receipt_wait_running;
+        if (recover) recovery_requested = false;
+        bool retry_receipt = retained_receipt_pending;
+        rs232_receipt_data_t retry_data = retained_receipt;
+        xSemaphoreGive(payment_ctx_sem);
+        if (retry_receipt) {
+            (void)publish_payment_completion(&retry_data, false, "retry receipt NVS commit");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        if (recover) {
+            input_switch_force_control_switch_off("payment recovery");
+            payment_input_switch_update(0);
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
 static void clear_active_payment_context(const char *completed_msg_id)
 {
     if (payment_ctx_sem != NULL) {
@@ -482,6 +501,7 @@ static void clear_active_payment_context(const char *completed_msg_id)
         active_payment_input_started = false;
         active_payment_money_keypad_done = false;
         active_payment_input_event_published = false;
+        (void)persist_payment_locked();
     }
 
     if (payment_ctx_sem != NULL) {
@@ -508,7 +528,7 @@ static bool claim_active_payment_context(payment_completion_context_t *context)
      * INPUT_SWITCH has ever reached the ACTIVE level. */
     if (active_payment_active && active_payment_input_started) {
         context->type = active_payment_type;
-        context->configured_price = u16CurPrice;
+        context->configured_price = active_payment_price;
         context->has_msg_id = active_payment_has_msg_id;
         if (active_payment_has_msg_id) {
             snprintf(context->msg_id,
@@ -517,21 +537,12 @@ static bool claim_active_payment_context(payment_completion_context_t *context)
                      active_payment_msg_id);
         }
 
-        /* Claim and clear atomically.  This guarantees that the RS232-ready
-         * path and the INPUT_SWITCH timeout path cannot publish twice. */
-        active_payment_msg_id[0] = '\0';
-        active_payment_type = PAYMENT_COMMAND_NONE;
-        active_payment_money = 0;
-        active_payment_litter = 0;
-        active_payment_active = false;
-        active_payment_has_msg_id = false;
-        active_payment_input_started = false;
-        active_payment_money_keypad_done = false;
-        active_payment_input_event_published = false;
+        /* Keep context locked until event and removal of active payment are
+         * committed atomically by payment_journal_complete(). */
         claimed = true;
     }
 
-    if (payment_ctx_sem != NULL) {
+    if (!claimed && payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
     }
 
@@ -542,15 +553,13 @@ bool payment_control_switch_can_follow_input(void)
 {
     bool can_follow = true;
 
-    if (!virtual_keypad_is_enabled()) {
-        return true;
-    }
-
     if (payment_ctx_sem != NULL) {
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    can_follow = active_payment_active && active_payment_money_keypad_done;
+    can_follow = !cancel_keypad_pending && !active_payment_cancelled &&
+                 (!virtual_keypad_is_enabled() ||
+                  (active_payment_active && active_payment_money_keypad_done));
 
     if (payment_ctx_sem != NULL) {
         xSemaphoreGive(payment_ctx_sem);
@@ -568,7 +577,7 @@ void payment_set_qr_money_keypad_done(void)
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    if (active_payment_active) {
+    if (active_payment_active && !active_payment_cancelled) {
         active_payment_money_keypad_done = true;
         should_refresh_control = true;
         ESP_LOGI(TAG, "%s virtual keypad done, control switch can follow input now msg_id=%s",
@@ -824,6 +833,17 @@ static void handle_payment_command(const cJSON *root)
         return;
     }
 
+    if (strcmp(cmd, "set_qr_money") == 0 || strcmp(cmd, "set_qr_litter") == 0 ||
+        strcmp(cmd, "set_price") == 0 || strcmp(cmd, "enable_virtual_key") == 0) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+        bool busy = active_payment_active || cancel_keypad_pending || receipt_wait_running;
+        xSemaphoreGive(payment_ctx_sem);
+        if (busy || !payment_startup_ready || !journal_ready || !payment_journal_available()) {
+            publish_payment_ack(cmd, "error", busy ? "busy" : "payment_storage_unavailable", msg_id);
+            return;
+        }
+    }
+
     if (strcmp(cmd, "enable_virtual_key") == 0) {
         const cJSON *enable_item = cJSON_GetObjectItemCaseSensitive(param, "enable_virtual_key");
         char enable_buf[4];
@@ -908,6 +928,11 @@ static void handle_payment_command(const cJSON *root)
          * cannot resume after CC.  A newly accepted payment starts a fresh
          * keypad transaction and explicitly clears it. */
         virtual_keypad_set_payment_cancel_requested(false);
+        if (!set_active_payment_context(msg_id, PAYMENT_COMMAND_MONEY, qr_money, 0)) {
+            free(task_amount);
+            publish_payment_ack(cmd, "error", "payment_storage_unavailable", msg_id);
+            return;
+        }
         BaseType_t task_created = xTaskCreate(enter_qr_price_by_vir_keypad,
                                               "enter_qr_money",
                                               VIRTUAL_KEYPAD_TASK_STACK_SIZE,
@@ -916,15 +941,12 @@ static void handle_payment_command(const cJSON *root)
                                               NULL);
         if (task_created != pdPASS) {
             free(task_amount);
+            clear_active_payment_context(NULL);
             ESP_LOGE(TAG, "Failed to create QR money keypad task");
             publish_payment_ack(cmd, "error", "task create failed", msg_id);
             return;
         }
 
-        set_active_payment_context(msg_id,
-                                   PAYMENT_COMMAND_MONEY,
-                                   qr_money,
-                                   0);
         ESP_LOGI(TAG,
                  "Payment command accepted: cmd=%s qr_money=%lu keypad=%s msg_id=%s",
                  cmd,
@@ -954,6 +976,11 @@ static void handle_payment_command(const cJSON *root)
         }
 
         virtual_keypad_set_payment_cancel_requested(false);
+        if (!set_active_payment_context(msg_id, PAYMENT_COMMAND_LITTER, 0, qr_litter)) {
+            free(task_litter);
+            publish_payment_ack(cmd, "error", "payment_storage_unavailable", msg_id);
+            return;
+        }
         BaseType_t task_created = xTaskCreate(enter_qr_litter_by_vir_keypad,
                                               "enter_qr_litter",
                                               VIRTUAL_KEYPAD_TASK_STACK_SIZE,
@@ -962,15 +989,12 @@ static void handle_payment_command(const cJSON *root)
                                               NULL);
         if (task_created != pdPASS) {
             free(task_litter);
+            clear_active_payment_context(NULL);
             ESP_LOGE(TAG, "Failed to create QR litter keypad task");
             publish_payment_ack(cmd, "error", "fail_config_litter", msg_id);
             return;
         }
 
-        set_active_payment_context(msg_id,
-                                   PAYMENT_COMMAND_LITTER,
-                                   0,
-                                   qr_litter);
         ESP_LOGI(TAG,
                  "Payment command accepted: cmd=%s qr_litter=%lu keypad=%s msg_id=%s",
                  cmd,
@@ -1000,12 +1024,22 @@ static void handle_payment_command(const cJSON *root)
         /* Stop the active payment electrically before waiting for the keypad
          * semaphore.  GPIO7 must remain LOW even when GPIO6 is still HIGH. */
         virtual_keypad_set_payment_cancel_requested(true);
-        /* A valid cancel command is an emergency stop for whichever payment
-         * is active.  Its msg_id is still echoed in ACK, but cancellation is
-         * not allowed to leave a different active context driving GPIO7. */
-        clear_active_payment_context(NULL);
-        rs232_receipt_reset();
         input_switch_force_control_switch_off("cancel_qr_money");
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+        bool repeated = cancel_keypad_pending || (active_payment_active && active_payment_cancelled);
+        active_payment_cancelled = true;
+        if (!repeated) cancel_keypad_pending = true;
+        bool started = active_payment_active && active_payment_input_started;
+        if (!started) active_payment_active = false;
+        bool saved = persist_payment_locked();
+        xSemaphoreGive(payment_ctx_sem);
+        input_switch_force_control_switch_off("cancel_qr_money");
+        if (repeated) {
+            publish_payment_ack(cmd, saved ? "ok" : "error", saved ? NULL : "payment_storage_unavailable", msg_id);
+            return;
+        }
+        /* Preserve the collector and original msg_id when dispensing started:
+         * shutting GPIO7 off can immediately print the final partial receipt. */
 
         BaseType_t task_created = xTaskCreate(cancel_qr_money_by_vir_keypad,
                                               "cancel_qr_money",
@@ -1014,13 +1048,14 @@ static void handle_payment_command(const cJSON *root)
                                               configMAX_PRIORITIES - 1,
                                               NULL);
         if (task_created != pdPASS) {
+            payment_cancel_keypad_done();
             ESP_LOGE(TAG, "Failed to create cancel QR money keypad task");
             publish_payment_ack(cmd, "error", "task create failed", msg_id);
             return;
         }
 
         ESP_LOGI(TAG, "Payment command accepted: cmd=%s msg_id=%s", cmd, msg_id);
-        publish_payment_ack(cmd, "ok", NULL, msg_id);
+        publish_payment_ack(cmd, saved ? "ok" : "error", saved ? NULL : "payment_storage_unavailable", msg_id);
         return;
     }
 
@@ -1047,6 +1082,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
             mqtt_connected = true;
+            payment_journal_connected(true);
             xEventGroupSetBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
             msg_id = esp_mqtt_client_subscribe(client, tbmq_command_topic, 1);
             ESP_LOGI(TAG, "subscribe to topic: %s QoS=1, msg_id=%d", tbmq_command_topic, msg_id);
@@ -1068,6 +1104,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             break;
         case MQTT_EVENT_DISCONNECTED:
             mqtt_connected = false;
+            payment_journal_connected(false);
             xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
             ESP_LOGW(TAG, "MQTT_EVENT_DISCONNECTED");
             break;
@@ -1080,6 +1117,15 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             break;
         case MQTT_EVENT_PUBLISHED:
             ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+            /* IDF MQTT5 exposes an explicit PUBACK reason as one data byte;
+             * a short PUBACK has no data and implies success. */
+            if (event->protocol_ver == MQTT_PROTOCOL_V_5 && event->data &&
+                event->data_len == 1 && (uint8_t)event->data[0] >= 0x80) {
+                ESP_LOGE(TAG, "Broker rejected packet=%d reason=0x%02x; retain durable event",
+                         event->msg_id, (unsigned int)(uint8_t)event->data[0]);
+            } else {
+                payment_journal_puback(event->msg_id);
+            }
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
@@ -1201,6 +1247,7 @@ static esp_err_t FD_mqtt_event_handler_cb(esp_mqtt_event_handle_t event)
             break;
         case MQTT_EVENT_ERROR:
             mqtt_connected = false;
+            payment_journal_connected(false);
             xEventGroupClearBits(mqtt_conn_event_group, MQTT_CONNECTED_EVENT);
             ESP_LOGE(TAG, "MQTT_EVENT_ERROR");
             if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
@@ -1249,6 +1296,7 @@ static void FD_mqtt_app_start(void)
     };
 
     client = esp_mqtt_client_init(&mqtt_cfg);
+    payment_journal_attach(client);
     if (client == NULL) {
         ESP_LOGE(TAG, "Failed to initialize MQTT client");
         return;
@@ -1337,6 +1385,10 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
                  source != NULL ? source : "unknown");
         return false;
     }
+    if (missing_receipt && retained_receipt_pending) {
+        xSemaphoreGive(payment_ctx_sem);
+        return false;
+    }
 
     if (!missing_receipt && receipt_data != NULL) {
         ESP_LOGI(TAG,
@@ -1392,18 +1444,41 @@ static bool publish_payment_completion(const rs232_receipt_data_t *receipt_data,
         }
     }
 
+    /* The payment lock is still held from claim_active_payment_context().
+     * Do not drop RAM or persistent active state until the event is durable. */
+    bool durable = payment_journal_complete(tbmq_event_topic, completion_payload,
+                        !missing_receipt && receipt_data ? receipt_data->transaction_time : NULL,
+                        !missing_receipt && receipt_data ? receipt_data->money : 0,
+                        !missing_receipt && receipt_data ? receipt_data->liter_milliliters : 0);
+    if (durable) {
+        retained_receipt_pending = false;
+        active_payment_active = false;
+        active_payment_has_msg_id = false;
+        active_payment_input_started = false;
+        active_payment_money_keypad_done = false;
+        active_payment_msg_id[0] = '\0';
+    } else if (!missing_receipt && receipt_data) {
+        retained_receipt = *receipt_data;
+        retained_receipt_pending = true;
+    }
+    xSemaphoreGive(payment_ctx_sem);
+    if (!durable) {
+        xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+        active_payment_cancelled = true;
+        if (!retained_receipt_pending) recovery_requested = true;
+        xSemaphoreGive(payment_ctx_sem);
+        input_switch_force_control_switch_off("completion NVS save failed");
+        ESP_LOGE(TAG, "Completion not stored; payment retained for retry");
+        return false;
+    }
+
     ESP_LOGI(TAG,
              "Payment completion triggered by %s, payload=%s",
              source != NULL ? source : "unknown",
              completion_payload);
-    int stat = push_completion_event(completion_payload, strlen(completion_payload));
-    ESP_LOGI(TAG, "completion event publish stat=%d", stat);
+    ESP_LOGI(TAG, "Completion durable; awaiting broker PUBACK via payment outbox");
 
-    if (stat >= 0 && !missing_receipt && receipt_data != NULL) {
-        save_last_published_receipt(receipt_data);
-    }
-
-    if (stat >= 0 && !missing_receipt && receipt_data != NULL &&
+    if (!missing_receipt && receipt_data != NULL &&
         virtual_keypad_is_enabled()) {
         input_switch_schedule_virtual_control_off(
             VIRTUAL_PAYMENT_CONTROL_OFF_DELAY_MS);
@@ -1449,7 +1524,7 @@ void payment_input_switch_publish_active_event(void)
         xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
     }
 
-    if (active_payment_active &&
+    if (active_payment_active && !active_payment_cancelled &&
         active_payment_input_started &&
         active_payment_money_keypad_done &&
         active_payment_has_msg_id &&
@@ -1491,12 +1566,10 @@ void payment_input_switch_publish_active_event(void)
 void payment_input_switch_update(uint8_t level)
 {
     char completed_msg_id[TBMQ_MSG_ID_LEN + 1];
-    rs232_receipt_data_t receipt_data = {0};
     payment_command_type_t active_type = PAYMENT_COMMAND_NONE;
     bool has_payment = false;
     bool should_check_receipt = false;
     bool should_reset_receipt = false;
-    bool receipt_checked = false;
 
     completed_msg_id[0] = '\0';
 
@@ -1511,7 +1584,7 @@ void payment_input_switch_update(uint8_t level)
             snprintf(completed_msg_id, sizeof(completed_msg_id), "%s", active_payment_msg_id);
         }
 
-        if (level != 0) {
+        if (level != 0 && !active_payment_cancelled && active_payment_money_keypad_done) {
             if (!active_payment_input_started) {
                 ESP_LOGI(TAG, "Payment input switch ACTIVE: dispense started type=%d msg_id=%s",
                          active_type,
@@ -1519,6 +1592,10 @@ void payment_input_switch_update(uint8_t level)
                 should_reset_receipt = true;
             }
             active_payment_input_started = true;
+            if (should_reset_receipt && !persist_payment_locked()) {
+                active_payment_cancelled = true;
+                recovery_requested = true;
+            }
         } else if (active_payment_input_started) {
             should_check_receipt = true;
         }
@@ -1547,6 +1624,24 @@ void payment_input_switch_update(uint8_t level)
     if (!should_check_receipt) {
         return;
     }
+
+    xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    if (receipt_wait_running || cancel_keypad_pending) {
+        xSemaphoreGive(payment_ctx_sem);
+        return;
+    }
+    receipt_wait_running = true;
+    xSemaphoreGive(payment_ctx_sem);
+    payment_wait_for_receipt();
+    xSemaphoreTake(payment_ctx_sem, portMAX_DELAY);
+    receipt_wait_running = false;
+    xSemaphoreGive(payment_ctx_sem);
+}
+
+static void payment_wait_for_receipt(void)
+{
+    rs232_receipt_data_t receipt_data = {0};
+    bool receipt_checked = false;
 
     for (uint32_t elapsed_ms = 0; elapsed_ms <= RS232_RECEIPT_WAIT_MS;
          elapsed_ms += RS232_RECEIPT_POLL_MS) {
@@ -1933,6 +2028,28 @@ void FD_wifi_mqtt_config(void)
         return;
     }
 
+    journal_ready = payment_journal_init() == ESP_OK;
+    payment_saved_t restored = {0};
+    if (journal_ready && payment_journal_load_active(&restored)) {
+        snprintf(active_payment_msg_id, sizeof(active_payment_msg_id), "%s", restored.msg_id);
+        active_payment_type = restored.type;
+        active_payment_money = restored.money;
+        active_payment_litter = restored.litter;
+        active_payment_price = restored.price;
+        active_payment_active = true;
+        active_payment_has_msg_id = true;
+        /* No automatic resume: started is saved before allowing GPIO7 HIGH. */
+        active_payment_input_started = restored.started;
+        active_payment_cancelled = true;
+        recovery_requested = restored.started;
+        virtual_keypad_set_payment_cancel_requested(true);
+        ESP_LOGW(TAG, "Restored payment %s; GPIO7 blocked, recover receipt only", restored.msg_id);
+        if (!restored.started) {
+            clear_active_payment_context(NULL);
+            ESP_LOGW(TAG, "Interrupted payment had not started dispensing; do not replay keys");
+        }
+    }
+
     payment_receipt_queue = xQueueCreate(PAYMENT_RECEIPT_QUEUE_LENGTH,
                                          sizeof(rs232_receipt_data_t));
     if (payment_receipt_queue == NULL) {
@@ -1966,6 +2083,11 @@ void FD_wifi_mqtt_config(void)
     rs232_config();
     ESP_LOGI(TAG, "RS232 config done\n");
     virtual_keypad_boot_clear();
+    if (xTaskCreate(payment_recovery_task, "payment_recover", 6144, NULL, 5, NULL) != pdPASS) {
+        journal_ready = false;
+        ESP_LOGE(TAG, "Recovery task unavailable; block new payments");
+    }
+    payment_startup_ready = true;
     xTaskCreate(push_msg_to_broker, "push_msg_to_broker", 4096, NULL, 5, NULL);
     xTaskCreate(ping_tb, "ping_tb", PING_TASK_STACK_SIZE, NULL, 5, NULL);
     ota_start_github_version_check();

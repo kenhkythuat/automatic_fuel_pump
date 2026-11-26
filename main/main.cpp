@@ -34,7 +34,7 @@ extern "C"
 #define DEFAULT_DEVICE_ID "node_pay_001"
 #define DEFAULT_GW_PAY_ID "gw_pay_001"
 #define DEFAULT_MQTT_CLIENT_ID "node_qr_001"
-#define DEFAULT_FW_VERSION 23
+#define DEFAULT_FW_VERSION 24
 #define DEFAULT_PRICE 10000
 
 uint8_t operationMode; // OTA submodule: there are 2 modes: FUEL_DISPENSER_MODE and OTA_MODE
@@ -171,13 +171,12 @@ extern "C" void app_main(void)
     err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
-        /* NVS partition was truncated
-         * and needs to be erased */
-        ESP_ERROR_CHECK(nvs_flash_erase());
-
-        /* Retry nvs_flash_init */
-        ESP_ERROR_CHECK(nvs_flash_init());
+        /* Never erase payment journal automatically on a storage error. */
+        ESP_LOGE(TAG, "NVS unavailable (%s); preserve pending transactions and stop startup",
+                 esp_err_to_name(err));
+        return;
     }
+    ESP_ERROR_CHECK(err);
     // readKeysFromNVS();
 
     ota_mark_app_valid_after_boot();

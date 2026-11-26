@@ -631,19 +631,25 @@ void enter_qr_litter_by_vir_keypad(void *arg)
 void cancel_qr_money_by_vir_keypad(void *arg)
 {
     (void)arg;
+    bool restore_external_physical;
 
     ESP_LOGI(TAG, "Cancel QR money task start, stack free=%u",
              (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     virtual_keypad_sequence_begin("cancel_qr_money");
+    restore_external_physical = virtual_keypad_external_physical_enabled;
+    if (restore_external_physical) virtual_keypad_apply_external_physical(false, false);
     ESP_LOGI(TAG, "Cancel QR money after sequence begin, stack free=%u",
              (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI(TAG, "Cancel QR money start: press CC");
 
     press_key('C');
     press_key('C');
+    virtual_keypad_idle();
+    if (restore_external_physical) virtual_keypad_apply_external_physical(true, false);
 
     ESP_LOGI(TAG, "Cancel QR money completed.\n\n");
     virtual_keypad_sequence_end("cancel_qr_money");
+    payment_cancel_keypad_done();
     ESP_LOGI(TAG, "Cancel QR money task end, stack free=%u",
              (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     vTaskDelete(NULL);

@@ -80,9 +80,11 @@ void payment_input_switch_update(uint8_t level);
 void payment_input_switch_publish_active_event(void);
 bool payment_control_switch_can_follow_input(void);
 void payment_set_qr_money_keypad_done(void);
+void payment_cancel_keypad_done(void);
 void input_switch_refresh_control_switch(void);
 void input_switch_schedule_virtual_control_off(uint32_t delay_ms);
 void input_switch_force_control_switch_off(const char *reason);
+void input_switch_release_control_lock(void);
 void keypad_password_handle_key_event(char key, bool pressed);
 bool keypad_password_is_unlocked(void);
 

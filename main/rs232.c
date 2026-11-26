@@ -138,6 +138,8 @@ static volatile bool keypad_master_scan_paused;
 static volatile bool keypad_master_scan_external_physical_mode;
 static QueueHandle_t input_switch_queue;
 static TimerHandle_t control_switch_off_timer;
+static portMUX_TYPE control_switch_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool control_switch_forced_off;
 
 typedef struct {
     uint8_t row;
@@ -1362,7 +1364,10 @@ static void input_switch_apply_control_level(uint8_t input_level, const char *re
                  input_level);
     }
 
+    portENTER_CRITICAL(&control_switch_mux);
+    if (control_switch_forced_off) control_level = 0;
     gpio_set_level(CONTROL_SWITCH_PIN, control_level);
+    portEXIT_CRITICAL(&control_switch_mux);
     ESP_LOGI(TAG, "CONTROL_SWITCH GPIO%d set=%u (%s, input=%u)",
              CONTROL_SWITCH_PIN,
              control_level,
@@ -1437,16 +1442,26 @@ void input_switch_schedule_virtual_control_off(uint32_t delay_ms)
 
 void input_switch_force_control_switch_off(const char *reason)
 {
+    portENTER_CRITICAL(&control_switch_mux);
+    control_switch_forced_off = true;
+    gpio_set_level(CONTROL_SWITCH_PIN, 0);
+    portEXIT_CRITICAL(&control_switch_mux);
     if (control_switch_off_timer != NULL) {
         (void)xTimerStop(control_switch_off_timer, 0);
     }
 
-    gpio_set_level(CONTROL_SWITCH_PIN, 0);
     ESP_LOGW(TAG,
              "CONTROL_SWITCH GPIO%d forced OFF immediately (%s, input=%u)",
              CONTROL_SWITCH_PIN,
              reason != NULL ? reason : "requested",
              (unsigned int)gpio_get_level(INPUT_SWITCH_PIN));
+}
+
+void input_switch_release_control_lock(void)
+{
+    portENTER_CRITICAL(&control_switch_mux);
+    control_switch_forced_off = false;
+    portEXIT_CRITICAL(&control_switch_mux);
 }
 
 static void input_switch_task(void *arg)
